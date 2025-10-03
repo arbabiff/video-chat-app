@@ -10,7 +10,7 @@
 .video-surface { position: relative; z-index: 0; }
 
 /* Radar/Globe styles */
-.radar-container { position: relative; width: 100%; max-width: 520px; aspect-ratio: 1/1; border-radius: 50%; overflow: hidden; background: radial-gradient(ellipse at center, #0f172a 0%, #0b1220 70%, #070d18 100%); border: 1px solid rgba(255,255,255,0.08); }
+.radar-container { position: relative; width: 100%; height: 100%; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at center, #0f172a 0%, #0b1220 70%, #070d18 100%); aspect-ratio: 1/1; max-width: 100%; max-height: 100%; margin: auto; }
 .globe-grid { position: absolute; inset: 0; background-image: radial-gradient(circle at 50% 50%, rgba(59,130,246,0.08) 0%, transparent 60%), repeating-linear-gradient(0deg, rgba(59,130,246,0.12), rgba(59,130,246,0.12) 1px, transparent 1px, transparent 20px), repeating-linear-gradient(90deg, rgba(59,130,246,0.12), rgba(59,130,246,0.12) 1px, transparent 1px, transparent 20px); filter: blur(0.2px); }
 .radar-sweep { position: absolute; inset: 0; background: conic-gradient(from 0deg, rgba(59,130,246,0.35), rgba(59,130,246,0) 45%); animation: sweep 3s linear infinite; border-radius: 50%; }
 @keyframes sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -173,14 +173,12 @@ code {
 
 /* تنظیمات responsive */
 @media (max-width: 768px) {
-  .radar-container { max-width: 420px; }
   html {
     font-size: 14px;
   }
 }
 
 @media (max-width: 480px) {
-  .radar-container { max-width: 320px; }
   html {
     font-size: 12px;
   }
@@ -229,7 +227,7 @@ select:focus {
 .chat-message-input { position: relative; z-index: 60; }
 .video-surface { position: relative; z-index: 0; }
 
-.radar-container { position: relative; width: 100%; max-width: 520px; aspect-ratio: 1/1; border-radius: 50%; overflow: hidden; background: radial-gradient(ellipse at center, #0f172a 0%, #0b1220 70%, #070d18 100%); border: 1px solid rgba(255,255,255,0.08); }
+.radar-container { position: relative; width: 100%; height: 100%; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at center, #0f172a 0%, #0b1220 70%, #070d18 100%); aspect-ratio: 1/1; max-width: 100%; max-height: 100%; margin: auto; }
 .globe-grid { position: absolute; inset: 0; background-image: radial-gradient(circle at 50% 50%, rgba(59,130,246,0.08) 0%, transparent 60%), repeating-linear-gradient(0deg, rgba(59,130,246,0.12), rgba(59,130,246,0.12) 1px, transparent 1px, transparent 20px), repeating-linear-gradient(90deg, rgba(59,130,246,0.12), rgba(59,130,246,0.12) 1px, transparent 1px, transparent 20px); filter: blur(0.2px); }
 .radar-sweep { position: absolute; inset: 0; background: conic-gradient(from 0deg, rgba(59,130,246,0.35), rgba(59,130,246,0) 45%); animation: sweep 3.6s linear infinite; border-radius: 50%; }
 @keyframes sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

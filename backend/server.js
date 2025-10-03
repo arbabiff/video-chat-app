@@ -25,6 +25,7 @@ const chatRoutes = require('./routes/chat');
 const { auth } = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
+const { scheduleSnapshotCleanup } = require('./services/snapshotService');
 
 // Socket handlers
 const chatHandler = require('./socket/chatHandler');
@@ -109,10 +110,12 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', auth, userRoutes);
 app.use('/api/admin', auth, adminRoutes);
-app.use('/api/subscriptions', auth, subscriptionRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/reports', auth, reportRoutes);
 app.use('/api/chat', auth, chatRoutes);
+// Branding (icon upload/serve) - no auth for simplicity
+app.use('/api/branding', require('./routes/branding'));
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -148,6 +151,9 @@ io.on('connection', (socket) => {
 
 // Static files (for uploaded content)
 app.use('/uploads', express.static('uploads'));
+
+// Schedule daily cleanup for expired snapshots
+scheduleSnapshotCleanup();
 
 // Catch-all for undefined routes
 app.use('*', (req, res) => {

@@ -1,0 +1,186 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "ir.videochat.app"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "ir.videochat.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+// Auto-generate launcher icons from Admin Panel upload before each build
+// ICON_URL can be set in local.properties or as a Gradle property/environment variable.
+// Fallback: generates a simple default icon if download fails.
+
+task updateAppIcon {
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+
+        // Resolve ICON_URL from project props, local.properties, or env
+        def iconUrlProp = null
+        if (project.hasProperty('ICON_URL')) {
+            iconUrlProp = project.property('ICON_URL')
+        }
+        def props = new Properties()
+        def localPropsFile = rootProject.file('local.properties')
+        if (localPropsFile.exists()) {
+            localPropsFile.withInputStream { props.load(it) }
+        }
+        def iconUrl = iconUrlProp ?: (props.getProperty('ICON_URL') ?: System.getenv('ICON_URL'))
+        if (iconUrl == null || iconUrl.trim().isEmpty()) {
+            iconUrl = 'http://localhost:8000/api/branding/icon'
+        }
+
+        def tmpDir = new File(buildDir, 'generated/icon')
+        tmpDir.mkdirs()
+        def downloaded = new File(tmpDir, 'icon.png')
+
+        // Try to download icon
+        boolean haveRemoteIcon = false
+        try {
+            def url = new URL(iconUrl)
+            def conn = url.openConnection()
+            conn.setConnectTimeout(10000)
+            conn.setReadTimeout(20000)
+            conn.setRequestProperty('Accept', 'image/png,image/*;q=0.9,*/*;q=0.8')
+            def bytes = conn.getInputStream().bytes
+            downloaded.bytes = bytes
+            haveRemoteIcon = downloaded.exists() && downloaded.length() > 0
+            println "[updateAppIcon] Downloaded icon from ${iconUrl} (${downloaded.length()} bytes)"
+        } catch (Throwable t) {
+            println "[updateAppIcon] Could not download icon from ${iconUrl}: ${t.message} — generating a default icon."
+        }
+
+        // Helper: create a default square icon
+        def createDefaultIcon = { int size ->
+            def img = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            def g2 = img.createGraphics()
+            try {
+                g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.setColor(new java.awt.Color(0x1E, 0x88, 0xE5)) // blue background
+                g2.fillRect(0, 0, size, size)
+                g2.setColor(java.awt.Color.WHITE)
+                def fontSize = (int)(size * 0.55)
+                g2.setFont(new java.awt.Font('SansSerif', java.awt.Font.BOLD, fontSize))
+                def fm = g2.getFontMetrics()
+                def text = 'D'
+                def textWidth = fm.stringWidth(text)
+                def textAscent = fm.getAscent()
+                def x = (size - textWidth) / 2
+                def y = (size + textAscent) / 2 - (int)(fontSize * 0.15)
+                g2.drawString(text, x, y)
+            } finally {
+                g2.dispose()
+            }
+            return img
+        }
+
+        // Helper: load source image or default
+        def loadSource = {
+            try {
+                if (haveRemoteIcon) {
+                    return javax.imageio.ImageIO.read(downloaded)
+                }
+            } catch (Throwable ignore) {}
+            return createDefaultIcon(1024)
+        }
+
+        def src = loadSource()
+        if (src == null) {
+            throw new GradleException('[updateAppIcon] Failed to obtain source icon')
+        }
+
+        // Resolutions
+        def densities = [mdpi:48, hdpi:72, xhdpi:96, xxhdpi:144, xxxhdpi:192]
+        def densitiesFg = [mdpi:108, hdpi:162, xhdpi:216, xxhdpi:324, xxxhdpi:432]
+
+        // Scale function with high quality
+        def scaleTo = { java.awt.image.BufferedImage input, int size ->
+            def scaled = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            def g2 = scaled.createGraphics()
+            try {
+                g2.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+                g2.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, java.awt.RenderingHints.VALUE_RENDER_QUALITY)
+                g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.drawImage(input, 0, 0, size, size, null)
+            } finally {
+                g2.dispose()
+            }
+            return scaled
+        }
+
+        def resDir = file('src/main/res')
+        ['mipmap-mdpi','mipmap-hdpi','mipmap-xhdpi','mipmap-xxhdpi','mipmap-xxxhdpi'].each { d ->
+            new File(resDir, d).mkdirs()
+        }
+
+        // Write PNG file helper
+        def writePng = { java.awt.image.BufferedImage img, File outFile ->
+            outFile.parentFile.mkdirs()
+            javax.imageio.ImageIO.write(img, 'PNG', outFile)
+        }
+
+        densities.each { k, px ->
+            def dir = new File(resDir, "mipmap-${k}")
+            def fallback = scaleTo(src, px)
+            writePng(fallback, new File(dir, 'ic_launcher.png'))
+            writePng(fallback, new File(dir, 'ic_launcher_round.png'))
+        }
+
+        densitiesFg.each { k, px ->
+            def dir = new File(resDir, "mipmap-${k}")
+            def fg = scaleTo(src, px)
+            writePng(fg, new File(dir, 'ic_launcher_foreground.png'))
+        }
+
+        println '[updateAppIcon] Launcher icons generated in res/mipmap-*'
+    }
+}
+
+// Ensure icon generation runs before build
+preBuild.dependsOn(updateAppIcon)

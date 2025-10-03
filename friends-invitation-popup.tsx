@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, UserPlus, Gift, Copy, Share, Phone, Users, CheckCircle, Clock, Star } from 'lucide-react';
+import { X, UserPlus, Gift, Copy, Phone, Users, CheckCircle, Clock, Star } from 'lucide-react';
 
 interface FriendsInvitationPopupProps {
   open?: boolean;
@@ -76,17 +76,6 @@ const FriendsInvitationPopup: React.FC<FriendsInvitationPopupProps> = ({ open, o
     alert('لینک دعوت کپی شد!');
   };
 
-  const shareInvite = () => {
-    if (navigator.share) {
-      navigator.share({
-        title: 'دعوت به چت تصویری',
-        text: 'به اپلیکیشن چت تصویری بپیوند و اشتراک رایگان بگیر!',
-        url: `https://videochat.app/invite/${inviteCode}`
-      });
-    } else {
-      copyInviteLink();
-    }
-  };
 
   // Auto-hide behavior when embedded and requested - DISABLED for manual close
   useEffect(() => {
@@ -189,18 +178,8 @@ const FriendsInvitationPopup: React.FC<FriendsInvitationPopupProps> = ({ open, o
                 </div>
               )}
 
-              {/* Share Options - Smaller */}
+              {/* Copy Link Only */}
               <div className="space-y-2">
-                <p className="text-gray-300 text-xs">یا از طریق:</p>
-                
-                <button
-                  onClick={shareInvite}
-                  className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white p-2 rounded-lg flex items-center justify-center gap-2 hover:from-blue-700 hover:to-blue-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                >
-                  <Share className="w-4 h-4" />
-                  اشتراک‌گذاری لینک
-                </button>
-
                 <button
                   onClick={copyInviteLink}
                   className="w-full bg-gray-700 text-white p-2 rounded-lg flex items-center justify-center gap-2 hover:bg-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-gray-500"

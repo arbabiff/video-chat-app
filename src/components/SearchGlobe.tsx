@@ -38,35 +38,28 @@ const SearchGlobe: React.FC<SearchGlobeProps> = ({ users = demoUsers, durationMs
       const top = `${Math.min(95, Math.max(5, y * 100))}%`;
       const isHighlight = highlight && u.id === highlight.id;
       if (!isHighlight) {
-        // Blue dot for non-highlighted users
+        // Red dot for non-highlighted users
         return (
           <div key={u.id} className="user-ping" style={{ left, top }}>
-            <div className="dot" style={{ background: '#3b82f6', boxShadow: '0 0 0 2px #3b82f655' }} />
+            <div className="dot" style={{ background: '#ef4444', boxShadow: '0 0 0 2px #ef444455' }} />
           </div>
         );
       }
-      // Highlighted user: avatar + green dot + pulse ring
+      // Highlighted user: green dot + pulse ring (no text)
       return (
         <div key={u.id} className="user-ping" style={{ left, top }}>
           <span className="ping-ring" />
           <div className="dot" style={{ background: '#22c55e', boxShadow: '0 0 0 2px #22c55e55' }} />
-          <div className="avatar">
-            <span style={{ marginInlineEnd: 6 }}>{u.avatar}</span>
-            <span style={{ fontWeight: 700 }}>{u.name.split(' ')[0]}</span>
-          </div>
         </div>
       );
     });
   }, [visibleUsers]);
 
   return (
-    <div className="w-full flex flex-col items-center gap-4">
-      <div className="radar-container">
-        <div className="globe-grid" />
-        <div className="radar-sweep" />
-        {pins}
-      </div>
-      <p className="text-white text-sm opacity-80">در حال یافتن کاربرهای مناسب در سراسر جهان...</p>
+    <div className="radar-container">
+      <div className="globe-grid" />
+      <div className="radar-sweep" />
+      {pins}
     </div>
   );
 };
