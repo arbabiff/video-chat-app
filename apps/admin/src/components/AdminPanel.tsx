@@ -30,15 +30,68 @@ type Rule = {
 const AdminPanel = () => {
   const [activeSection, setActiveSection] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([
+    {
+      id: 1,
+      name: 'اشتراک یک ماهه',
+      price: 150000,
+      duration: 30,
+      description: 'اشتراک یک ماهه با امکانات کامل',
+      features: [
+        'قابلیت قفل تا 3 دقیقه‌ای',
+        'ادامه ارتباط بالای 3 دقیقه'
+      ],
+      giftLocks: 10,
+      videoQuality: 'HD',
+      unlimitedTime: true,
+      giftEnabled: true,
+      active: true
+    },
+    {
+      id: 2,
+      name: 'اشتراک شش ماهه',
+      price: 630000,
+      duration: 180,
+      description: 'اشتراک شش ماهه با تخفیف ویژه',
+      features: [
+        'پشتیبانی اولویت‌دار',
+        'قفل نامحدود'
+      ],
+      giftLocks: 60,
+      videoQuality: 'FHD',
+      unlimitedTime: true,
+      giftEnabled: true,
+      active: true
+    },
+    {
+      id: 3,
+      name: 'اشتراک سالانه',
+      price: 900000,
+      duration: 365,
+      description: 'اشتراک سالانه با پیشینهاز تخفیف',
+      features: [
+        'تمام مزایای عضویت',
+        'ارتقاء تخفیف',
+        'قفل نامحدود'
+      ],
+      giftLocks: 120,
+      videoQuality: 'UHD',
+      unlimitedTime: true,
+      giftEnabled: true,
+      active: true
+    }
+  ]);
 
   useEffect(() => {
     (async () => {
       try {
         const res = await subscriptionApi.getAll();
-        setSubscriptions(res.data);
+        if (res.data && res.data.length > 0) {
+          setSubscriptions(res.data);
+        }
       } catch (e) {
-        console.error('Failed to load subscriptions', e);
+        console.error('Failed to load subscriptions, using defaults', e);
+        // اگر API کار نکند، از پلن‌های پیش‌فرض استفاده می‌کنیم
       }
     })();
   }, []);
