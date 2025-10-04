@@ -4,8 +4,9 @@ const API_BASE_URL = '/api';
 
 async function apiGet<T>(endpoint: string): Promise<T> {
   const token = getToken();
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  if (token) headers.set('Authorization', `Bearer ${token}`);
 
   const res = await fetch(`${API_BASE_URL}${endpoint}`, { headers });
   if (!res.ok) {
