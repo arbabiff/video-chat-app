@@ -31,12 +31,20 @@ export function parseJwt(token: string): any | null {
     // pad base64 string
     const pad = base64.length % 4;
     const padded = base64 + (pad ? '='.repeat(4 - pad) : '');
-    const json = typeof atob !== 'undefined' ? atob(padded) : Buffer.from(padded, 'base64').toString('binary');
+
+    // Only use browser atob; if not available (SSR), abort gracefully
+    if (typeof atob === 'undefined') return null;
+    const json = atob(padded);
+
     // decodeURIComponent may throw on invalid chars; fallback to direct parse
     try {
-      return JSON.parse(decodeURIComponent(Array.prototype.map.call(json, (c: string) => {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      }).join('')));
+      return JSON.parse(
+        decodeURIComponent(
+          Array.prototype.map.call(json, (c: string) => {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+          }).join('')
+        )
+      );
     } catch {
       return JSON.parse(json);
     }
