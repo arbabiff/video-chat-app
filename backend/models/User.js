@@ -197,6 +197,12 @@ const userSchema = new mongoose.Schema({
     default: Date.now
   },
   
+  // Ban info
+  banExpiresAt: {
+    type: Date,
+    default: null
+  },
+  
   // IP tracking for security
   lastLoginIP: String,
   registrationIP: String,
@@ -230,6 +236,20 @@ const userSchema = new mongoose.Schema({
     }
   }],
   
+  // Referral fields
+  phone: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
+  
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+
   // Device tokens for push notifications
   deviceTokens: [{
     token: String,
@@ -264,8 +284,10 @@ userSchema.virtual('isLocked').get(function() {
 // Indexes for better performance
 userSchema.index({ email: 1 });
 userSchema.index({ username: 1 });
+userSchema.index({ phone: 1 }, { unique: true, sparse: true });
 userSchema.index({ status: 1 });
 userSchema.index({ lastActive: -1 });
+userSchema.index({ banExpiresAt: 1 });
 userSchema.index({ 'subscription.type': 1 });
 userSchema.index({ createdAt: -1 });
 

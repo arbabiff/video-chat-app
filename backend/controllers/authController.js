@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const referralService = require('../services/referralService');
 
 // Helper function to send response
 const sendTokenResponse = (user, statusCode, res) => {
@@ -36,7 +37,8 @@ const register = async (req, res, next) => {
       displayName,
       gender,
       birthDate,
-      country
+      country,
+      referrerPhone
     } = req.body;
 
     // Validate required fields
@@ -98,6 +100,11 @@ const register = async (req, res, next) => {
     const verificationToken = user.getEmailVerificationToken();
     await user.save({ validateBeforeSave: false });
 
+    // If referrer phone provided, create referral record
+    if (referrerPhone) {
+      await referralService.createReferralByPhone(referrerPhone, user);
+    }
+
     // Log registration
     logger.info(`New user registered: ${user.username} (${user.email})`);
 
@@ -129,13 +136,44 @@ const login = async (req, res, next) => {
       });
     }
 
-    // Find user by email or username (include password for comparison)
-    const user = await User.findOne({
+    // Try to find user by email or username (include password for comparison)
+    let user = await User.findOne({
       $or: [
-        { email: login.toLowerCase() },
+        { email: (login || '').toLowerCase() },
         { username: login }
       ]
     }).select('+password');
+
+    // Development-only fallback: allow phone + 4-digit code login for user app
+    // This is only for local development convenience. DO NOT enable in production.
+    const isDev = (process.env.NODE_ENV || 'development') !== 'production';
+    const isPhone = /^0\d{10}$/.test(String(login)); // e.g., 09xxxxxxxxx (11 digits)
+    const devCode = process.env.DEV_PHONE_CODE || '1234';
+
+    if (!user && isDev && isPhone) {
+      // Try to find user by phone (no password check, only code check)
+      const byPhone = await User.findOne({ phone: login });
+      if (byPhone) {
+        if (password === devCode) {
+          // Allow login for active users only
+          if (byPhone.status === 'banned') {
+            return res.status(403).json({
+              success: false,
+              error: { message: 'حساب شما مسدود شده است', englishMessage: 'Your account has been banned' }
+            });
+          }
+          // Update last login info
+          byPhone.lastLoginIP = req.ip;
+          byPhone.lastActive = new Date();
+          await byPhone.save({ validateBeforeSave: false });
+          logger.info(`Dev phone login for user: ${byPhone.phone} from IP ${req.ip}`);
+          return sendTokenResponse(byPhone, 200, res);
+        } else {
+          return res.status(401).json({ success: false, error: { message: 'کد تایید نامعتبر است', englishMessage: 'Invalid verification code' } });
+        }
+      }
+      // If no user by phone, fall through to normal error
+    }
 
     if (!user) {
       return res.status(401).json({
@@ -163,7 +201,6 @@ const login = async (req, res, next) => {
 
     if (!isMatch) {
       await user.incLoginAttempts();
-      
       return res.status(401).json({
         success: false,
         error: {
@@ -247,7 +284,7 @@ const getMe = async (req, res, next) => {
 const updateProfile = async (req, res, next) => {
   try {
     const allowedUpdates = [
-      'displayName', 'avatar', 'country', 'language', 'preferences', 'privacy'
+      'displayName', 'avatar', 'country', 'language', 'preferences', 'privacy', 'phone'
     ];
     
     const updates = {};

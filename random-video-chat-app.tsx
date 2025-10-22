@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Users, Settings, Gift, Shield, MessageCircle, Heart, Flag, Lock, RotateCcw, Menu, X, Play, Pause, Send, Home, UserPlus, Bell, Mail, Info, Edit3, Save } from 'lucide-react';
+import { Camera, Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Users, User, UserX, Settings, Gift, Shield, MessageCircle, Heart, Flag, Lock, RotateCcw, RefreshCcw, Menu, X, Play, Square, Send, Home, UserPlus, Bell, Mail, Info, Edit3, Save, Smile } from 'lucide-react';
 import NotificationPopup from './notification-popup';
-import FriendsInvitationPopup from './friends-invitation-popup';
+import FriendsInvitationPopup from './friends-invitation-popup-simple';
 import GiftSubscriptionFlow from './src/components/GiftSubscriptionFlow';
 import { useAuth } from '@/hooks/useAuth';
-import { publicApi, PublicSubscription, PublicRule } from './src/services/publicApi';
+import { publicApi, PublicSubscription, PublicRule, PublicAppSettings } from './src/services/publicApi';
+import { uploadSnapshot, submitReport } from './src/services/reportApi';
+import { blockUser as apiBlockUser } from './src/services/userApi';
+import * as authApi from './src/services/authApi';
 
 type ChatMessage = { text: string; sender: 'me' | 'other'; time: string };
 type Report = { reason: string; time: Date; userId: string };
@@ -15,8 +18,13 @@ const FADE_MS = 400;         // خروج نرم
 
 const RandomVideoChatApp = () => {
   const [currentScreen, setCurrentScreen] = useState('login');
+  const [loginId, setLoginId] = useState('');
+  const [password, setPassword] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
+  // Verification resend timer
+  const [resendTimer, setResendTimer] = useState(60);
+  const [resending, setResending] = useState(false);
   const [isCallActive, setIsCallActive] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCameraOn, setIsCameraOn] = useState(true);
@@ -38,14 +46,33 @@ const RandomVideoChatApp = () => {
   const [blockedUsers, setBlockedUsers] = useState<string[]>([]);
   const [friends, setFriends] = useState<string[]>([]);
   const [lastThreeUsers, setLastThreeUsers] = useState<{id: string, name: string, avatar: string, time: Date}[]>([]);
+  const [lastSnapshots, setLastSnapshots] = useState<{id: string, userId?: string, url: string, time: Date}[]>([]);
   const [userBanDuration, setUserBanDuration] = useState<{userId: string, banUntil: Date}[]>([]);
   const [showWatermark, setShowWatermark] = useState(true);
   const [currentChatUser, setCurrentChatUser] = useState<{id: string, name: string, avatar: string} | null>(null);
-  const [previousScreen, setPreviousScreen] = useState<string>('verify');
+  const [previousScreen, setPreviousScreen] = useState<string>('login');
+  
+  // UI helpers
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
+
+  // Lightweight toast system for non-blocking notifications (e.g., lock actions)
+  const [toasts, setToasts] = useState<{ id: number; text: string; type?: 'info' | 'success' | 'error' }[]>([]);
+  const showToast = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts(prev => [...prev, { id, text, type }]);
+    window.setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  };
   
   // وضعیت مسدودی کاربر
   const [userBanStatus, setUserBanStatus] = useState<{isBanned: boolean, banUntil: Date | null, reason: string}>({ isBanned: false, banUntil: null, reason: '' });
   const [showBanPopup, setShowBanPopup] = useState(false);
+  
+  // Report screen selection (must be top-level for hooks rule)
+  const [selectedSuspectId, setSelectedSuspectId] = useState<string | null>(null);
+  const [showReportSelect, setShowReportSelect] = useState(false);
   
   const [notifications, setNotifications] = useState<any[]>([
     {
@@ -77,8 +104,10 @@ const RandomVideoChatApp = () => {
     }
   ]);
   
-  const videoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
 
   // Control embedded popups to show only on chat page and auto-hide after viewing
   const [showNotifPopup, setShowNotifPopup] = useState(false);
@@ -89,6 +118,19 @@ const RandomVideoChatApp = () => {
   const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false);
   const [userFoundButNoVideo, setUserFoundButNoVideo] = useState(false);
   const timersRef = useRef<number[]>([]);
+
+  // چرخش کوتاه‌مدت رادار هنگام جستجو
+  const [rotateRadar, setRotateRadar] = useState(false);
+  useEffect(() => {
+    let t: number | null = null;
+    if (isSearching) {
+      setRotateRadar(true);
+      t = window.setTimeout(() => setRotateRadar(false), 7000); // حدود 7 ثانیه بچرخد
+    } else {
+      setRotateRadar(false);
+    }
+    return () => { if (t !== null) window.clearTimeout(t); };
+  }, [isSearching]);
   
   // اشتراک هدیه
   const [showGiftFlow, setShowGiftFlow] = useState(false);
@@ -122,6 +164,13 @@ const RandomVideoChatApp = () => {
   });
   const [subscriptions, setSubscriptions] = useState<PublicSubscription[]>([]);
   const [publicRules, setPublicRules] = useState<PublicRule[]>([]);
+  const [appSettings, setAppSettings] = useState<PublicAppSettings | null>(null);
+  const [logoError, setLogoError] = useState(false);
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [acceptedRules, setAcceptedRules] = useState<boolean>(() => {
+    try { return localStorage.getItem('rulesAccepted') === 'true'; } catch { return false; }
+  });
+  const [pendingLoginAfterRules, setPendingLoginAfterRules] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -148,6 +197,18 @@ const RandomVideoChatApp = () => {
         setPublicRules(items);
       } catch (e) {
         console.warn('Failed to load rules from API', e);
+      }
+    })();
+  }, []);
+
+  // Load app settings (branding texts, legal flags)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await publicApi.settings.getPublic();
+        setAppSettings(res.settings);
+      } catch (e) {
+        console.warn('Failed to load app settings', e);
       }
     })();
   }, []);
@@ -216,6 +277,27 @@ const RandomVideoChatApp = () => {
     return { message: processedMessage.trim(), buttons };
   };
 
+  // حذف نمایش لینک‌های لوکال داخل متن پیام‌ها
+  const sanitizeMessageText = (text: string) => {
+    try {
+      return text
+        // localhost and dev
+        .replace(/https?:\/\/(localhost|127\.0\.0\.1|local)(:\\d+)?\S*/gi, '')
+        .replace(/\blocal:3001\b/gi, '')
+        // private LAN IPs
+        .replace(/https?:\/\/((10|192\.168|172\.(1[6-9]|2[0-9]|3[0-1]))(?:\.\d{1,3}){2})(:\\d+)?\S*/gi, '')
+        // file scheme
+        .replace(/file:\/\/\S*/gi, '')
+        // Windows absolute paths (C:\..., D:\...)
+        .replace(/\b[A-Za-z]:[\\\/][^\s]+/g, '')
+        // Unix-like absolute paths (/Users/... , /home/...)
+        .replace(/\/(Users|home|var|etc|opt|tmp|srv|media|mnt|Volumes|root)\/[\S]+/g, '')
+        .trim();
+    } catch {
+      return text;
+    }
+  };
+
   // Mock user data
   const currentUser = {
     phone: phoneNumber,
@@ -256,13 +338,45 @@ const RandomVideoChatApp = () => {
   }, [chatMessages]);
 
   const handleLogin = () => {
-    if (phoneNumber.length >= 10) {
+    if (!/^0\d{10}$/.test(phoneNumber)) return;
+    if (appSettings?.legal?.requireRulesAcceptance && !acceptedRules) {
+      setPendingLoginAfterRules(true);
+      setShowRulesModal(true);
+    } else {
+      // Move to verify screen to enter 4-digit code
+      setCurrentScreen('verify');
+    }
+  };
+
+  const handleAcceptRules = async () => {
+    try { localStorage.setItem('rulesAccepted', 'true'); } catch {}
+    setAcceptedRules(true);
+    setShowRulesModal(false);
+    if (pendingLoginAfterRules) {
+      setPendingLoginAfterRules(false);
+      // After accepting rules, continue phone verification flow
       setCurrentScreen('verify');
     }
   };
 
   const { login } = useAuth();
 
+  const attemptLogin = async () => {
+    if (!loginId || !password) return;
+    try {
+      await login(loginId, password);
+      setPhoneNumber(loginId);
+      await checkBanStatus();
+      setCurrentScreen('call');
+      setIsSearching(false);
+      setSearchPhase('idle');
+      setFadeOutSearch(false);
+      setIsCallActive(false);
+    } catch (e) {
+      alert('ورود ناموفق بود. لطفاً نام کاربری/رمز عبور را بررسی کنید.');
+    }
+  };
+  
   const handleVerify = () => {
     if (verificationCode.length === 4) {
       // Perform demo login to set a JWT-like token for role=user
@@ -284,6 +398,33 @@ const RandomVideoChatApp = () => {
     }
   };
 
+  // Reset resend timer when entering verify screen
+  useEffect(() => {
+    if (currentScreen === 'verify') {
+      setResendTimer(60);
+      setResending(false);
+    }
+  }, [currentScreen]);
+
+  // Countdown for resend
+  useEffect(() => {
+    if (currentScreen === 'verify' && resendTimer > 0) {
+      const t = window.setTimeout(() => setResendTimer(resendTimer - 1), 1000);
+      return () => clearTimeout(t);
+    }
+  }, [currentScreen, resendTimer]);
+
+  const handleResendCode = () => {
+    if (resending || resendTimer > 0) return;
+    setResending(true);
+    // Simulate sending verification code
+    setTimeout(() => {
+      setResending(false);
+      setResendTimer(60);
+      alert('کد تایید مجدداً ارسال شد');
+    }, 800);
+  };
+
   // پاک‌سازی تایمرها هنگام خروج از کامپوننت یا تغییر صفحه
   useEffect(() => {
     return () => {
@@ -291,6 +432,58 @@ const RandomVideoChatApp = () => {
       timersRef.current = [];
     };
   }, []);
+
+  // Capture a snapshot from remote video (or placeholder) and upload to backend
+  const captureRemoteSnapshot = async (): Promise<string | null> => {
+    try {
+      const width = 320, height = 180;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      const video = remoteVideoRef.current;
+      if (video && video.videoWidth && video.videoHeight) {
+        // draw current video frame
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        // cover fit
+        const scale = Math.max(width / vw, height / vh);
+        const sw = vw * scale;
+        const sh = vh * scale;
+        const sx = (width - sw) / 2;
+        const sy = (height - sh) / 2;
+        ctx.drawImage(video, sx, sy, sw, sh);
+      } else {
+        // fallback: gradient background with app label
+        const grd = ctx.createLinearGradient(0, 0, width, height);
+        grd.addColorStop(0, '#1f2937');
+        grd.addColorStop(1, '#111827');
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText('Snapshot', 10, 24);
+      }
+
+      const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.85));
+      if (!blob) return null;
+      const up = await uploadSnapshot(blob);
+      return up?.url || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const openReportWithSnapshot = async () => {
+    const url = await captureRemoteSnapshot();
+    if (url) {
+      setLastSnapshots(prev => [{ id: `snap_${Date.now()}`, userId: currentChatUser?.id, url, time: new Date() }, ...prev].slice(0, 8));
+    }
+    // ابتدا از کاربر می‌خواهیم فرد متخلف را از بین تصاویر اخیر انتخاب کند
+    setShowReportSelect(true);
+  };
 
   const startSearchProcess = () => {
     // پاک‌سازی تایمرهای قبلی
@@ -352,7 +545,66 @@ const RandomVideoChatApp = () => {
     timersRef.current.push(tFound, tFade, tCall);
   };
 
-  const startVideoCall = () => {
+  // Request camera/microphone when needed and attach to local preview video
+  const ensureLocalStream = async () => {
+    try {
+      if (localStreamRef.current) {
+        // Already have stream - make sure tracks respect current toggles
+        localStreamRef.current.getAudioTracks().forEach(t => (t.enabled = isMicOn));
+        localStreamRef.current.getVideoTracks().forEach(t => (t.enabled = isCameraOn));
+        if (videoRef.current) {
+          if (videoRef.current.srcObject !== localStreamRef.current) {
+            videoRef.current.srcObject = localStreamRef.current as any;
+          }
+        }
+        setPermissionError(null);
+        return localStreamRef.current;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
+      // Apply current toggles
+      stream.getAudioTracks().forEach(t => (t.enabled = isMicOn));
+      stream.getVideoTracks().forEach(t => (t.enabled = isCameraOn));
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream as any;
+      }
+      setPermissionError(null);
+      return stream;
+    } catch (err: any) {
+      let msg = 'دسترسی به دوربین/میکروفون رد شد یا در دسترس نیست';
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        msg += ' - برای دسترسی باید سایت روی HTTPS یا localhost اجرا شود';
+      }
+      setPermissionError(msg);
+      return null;
+    }
+  };
+
+  const cleanupLocalStream = () => {
+    const s = localStreamRef.current;
+    if (s) {
+      s.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  useEffect(() => {
+    const s = localStreamRef.current;
+    if (s) s.getAudioTracks().forEach(t => (t.enabled = isMicOn));
+  }, [isMicOn]);
+
+  useEffect(() => {
+    const s = localStreamRef.current;
+    if (s) s.getVideoTracks().forEach(t => (t.enabled = isCameraOn));
+  }, [isCameraOn]);
+
+  const startVideoCall = async () => {
+    // Request permissions and prepare local preview first
+    await ensureLocalStream();
+
     // شروع جستجو در همین صفحه چت
     setIsSearching(true);
     setSearchPhase('scanning');
@@ -363,14 +615,24 @@ const RandomVideoChatApp = () => {
     startSearchProcess();
   };
 
-  const endCall = () => {
+  const endCall = async () => {
+    // Capture snapshot of the last state before leaving
+    const url = await captureRemoteSnapshot();
+    if (url) {
+      setLastSnapshots(prev => [{ id: `snap_${Date.now()}`, userId: currentChatUser?.id, url, time: new Date() }, ...prev].slice(0, 8));
+    }
     setIsCallActive(false);
     setChatMessages([]);
-    setCurrentScreen('verify');
+    cleanupLocalStream();
+    setCurrentScreen('call');
   };
 
   // تابع جدید برای متوقف کردن فقط ویدیو بدون ترک صفحه چت
-  const stopVideoCall = () => {
+  const stopVideoCall = async () => {
+    const url = await captureRemoteSnapshot();
+    if (url) {
+      setLastSnapshots(prev => [{ id: `snap_${Date.now()}`, userId: currentChatUser?.id, url, time: new Date() }, ...prev].slice(0, 8));
+    }
     setIsCallActive(false);
     setIsSearching(false);
     setSearchPhase('idle');
@@ -381,9 +643,15 @@ const RandomVideoChatApp = () => {
     timersRef.current.forEach((t) => clearTimeout(t as any));
     timersRef.current = [];
     // چت را حفظ می‌کنیم و در همان صفحه می‌مانیم
+    cleanupLocalStream();
   };
 
-  const nextUser = () => {
+  const nextUser = async () => {
+    // قبل از رفتن به کاربر بعدی یک اسنپ‌شات ذخیره می‌کنیم
+    const url = await captureRemoteSnapshot();
+    if (url) {
+      setLastSnapshots(prev => [{ id: `snap_${Date.now()}`, userId: currentChatUser?.id, url, time: new Date() }, ...prev].slice(0, 8));
+    }
     // تمیز کردن چت و شروع جستجو برای کاربر بعدی
     setChatMessages([]);
     setIsCallActive(false);
@@ -393,6 +661,11 @@ const RandomVideoChatApp = () => {
     
     // شروع مراحل جستجو در همین صفحه
     startSearchProcess();
+  };
+
+  // Switch camera facing mode (UI only)
+  const switchCamera = () => {
+    setCameraFacing(prev => (prev === 'user' ? 'environment' : 'user'));
   };
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -436,12 +709,13 @@ const RandomVideoChatApp = () => {
       setLockCount(lockCount - 1);
       setIsOtherLocked(true);
       setOtherLockTimer(lockSettings.lockDurationSeconds);
-      // نمایش پیام به کاربر
-      alert(`✋ کاربر مقابل برای ${lockSettings.lockDurationSeconds} ثانیه قفل شد\nاو نمی‌تواند شما را رد کند`);
+      // پیام غیرمزاحم به‌صورت Toast مطابق نیازمندی‌ها
+      showToast(`✋ کاربر مقابل برای ${lockSettings.lockDurationSeconds} ثانیه قفل شد. او نمی‌تواند شما را رد کند`, 'success');
     } else if (lockCount === 0) {
+      // نمایش پنجره خرید قفل مطابق نیازمندی‌ها
       setShowLockPurchasePopup(true);
     } else if (isOtherLocked) {
-      alert(`⏱️ کاربر در حال حاضر قفل است\n${otherLockTimer} ثانیه باقیمانده`);
+      showToast(`⏱️ کاربر در حال حاضر قفل است. ${otherLockTimer} ثانیه باقیمانده`, 'info');
     }
   };
 
@@ -496,24 +770,34 @@ const RandomVideoChatApp = () => {
   };
   
   // چک کردن وضعیت مسدودی کاربر
-  const checkBanStatus = () => {
-    // شبیه‌سازی چک مسدودی از سرور
-    const banData = userBanDuration.find(ban => ban.userId === phoneNumber);
-    if (banData && banData.banUntil > new Date()) {
-      const remainingHours = Math.ceil((banData.banUntil.getTime() - new Date().getTime()) / (1000 * 60 * 60));
-      setUserBanStatus({
-        isBanned: true,
-        banUntil: banData.banUntil,
-        reason: 'تخلف از قوانین استفاده'
-      });
-      setShowBanPopup(true);
-    } else {
-      setUserBanStatus({ isBanned: false, banUntil: null, reason: '' });
+  const checkBanStatus = async () => {
+    // استعلام وضعیت کاربر از بک‌اند
+    const me = await authApi.getMe();
+    if (me?.user) {
+      if (me.user.status === 'banned') {
+        const until = me.user.banExpiresAt ? new Date(me.user.banExpiresAt) : null;
+        setUserBanStatus({
+          isBanned: true,
+          banUntil: until,
+          reason: 'تخلف از قوانین استفاده'
+        });
+        setShowBanPopup(true);
+      } else {
+        setUserBanStatus({ isBanned: false, banUntil: null, reason: '' });
+        setShowBanPopup(false);
+      }
     }
   };
   
   // چک کردن مسدودی در هر رندر
   useEffect(() => {
+    if (currentScreen === 'call') {
+      // هر ۳۰ ثانیه وضعیت مسدودی را چک کن
+      let iv: any = null;
+      (async () => { await checkBanStatus(); })();
+      iv = setInterval(checkBanStatus, 30000);
+      return () => { if (iv) clearInterval(iv); };
+    }
     if (currentScreen === 'call' && userBanStatus.isBanned && userBanStatus.banUntil) {
       const now = new Date();
       if (userBanStatus.banUntil > now) {
@@ -532,20 +816,31 @@ const RandomVideoChatApp = () => {
         <div className="flex-1 flex items-center justify-center p-4">
           <div className="bg-black/80 backdrop-blur-lg rounded-3xl p-8 w-full max-w-md border border-white/10">
             <div className="text-center mb-8">
-              <div className="w-20 h-20 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-2xl mx-auto mb-4 flex items-center justify-center">
-                <Camera className="w-10 h-10 text-white" />
+              <div className="w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center bg-transparent overflow-hidden">
+                {!logoError ? (
+                  <img
+                    src={appSettings?.branding?.logoUrl || '/api/branding/icon'}
+                    alt={appSettings?.branding?.siteName || 'Logo'}
+                    className="w-full h-full object-contain"
+                    onError={() => setLogoError(true)}
+                  />
+                ) : (
+                  <div className="w-20 h-20 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-2xl flex items-center justify-center">
+                    <Camera className="w-10 h-10 text-white" />
+                  </div>
+                )}
               </div>
-              <h1 className="text-2xl font-bold text-white mb-2">چت تصویری تصادفی</h1>
-              <p className="text-gray-300 text-sm">با افراد جدید آشنا شوید</p>
+              <h1 className="text-2xl font-bold text-white mb-2">{appSettings?.branding?.loginTitle ?? 'چت تصویری تصادفی'}</h1>
+              <p className="text-gray-300 text-sm">{appSettings?.branding?.loginSubtitle ?? 'با افراد جدید آشنا شوید'}</p>
             </div>
             
             <div className="space-y-4">
-              <div>
+              <div className="space-y-3">
                 <input
                   type="tel"
-                  placeholder="شماره تلفن"
+                  placeholder="شماره تلفن (مثلاً 09123456789)"
                   value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  onChange={(e) => setPhoneNumber(e.target.value.replace(/[^0-9]/g, '').slice(0, 11))}
                   className="w-full bg-gray-800/50 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
                   dir="ltr"
                 />
@@ -553,20 +848,61 @@ const RandomVideoChatApp = () => {
               
               <button
                 onClick={handleLogin}
-                disabled={phoneNumber.length < 10}
+                disabled={!/^0\d{10}$/.test(phoneNumber)}
                 className="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-3 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:from-blue-600 hover:to-purple-700 transition-all"
               >
-                ورود
+                ارسال کد تایید
               </button>
             </div>
             
             <div className="mt-8 text-center">
               <p className="text-gray-400 text-xs">
-                با ورود، قوانین استفاده را می‌پذیرید
+                {appSettings?.branding?.loginDisclaimer ?? 'با ورود، قوانین استفاده را می‌پذیرید'}
               </p>
             </div>
           </div>
         </div>
+      {/* Rules Modal */}
+      {showRulesModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="relative bg-white rounded-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setShowRulesModal(false)} aria-label="بستن" className="absolute top-3 right-3 p-1 rounded-full hover:bg-gray-100 focus:outline-none">
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
+            <h2 className="text-gray-800 text-lg font-bold mb-4 text-center">قوانین استفاده</h2>
+            {appSettings?.legal?.rulesText ? (
+              <div className="text-right text-gray-800 whitespace-pre-wrap leading-relaxed">
+                {appSettings.legal.rulesText}
+              </div>
+            ) : (
+              <div className="space-y-3 text-right">
+                {publicRules.length > 0 ? publicRules.map((r) => (
+                  <div key={r.id} className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    <div className="text-gray-900 font-medium">{r.title}</div>
+                    {r.description && <div className="text-gray-600 text-sm mt-1">{r.description}</div>}
+                  </div>
+                )) : (
+                  <div className="text-gray-500 text-sm">قوانین در حال حاضر در دسترس نیستند.</div>
+                )}
+              </div>
+            )}
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setShowRulesModal(false)}
+                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 rounded-lg"
+              >
+                انصراف
+              </button>
+              <button
+                onClick={handleAcceptRules}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg"
+              >
+                پذیرش قوانین
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     );
   }
@@ -605,6 +941,14 @@ const RandomVideoChatApp = () => {
                 className="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-3 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:from-blue-600 hover:to-purple-700 transition-all"
               >
                 تأیید
+              </button>
+
+              <button
+                onClick={handleResendCode}
+                disabled={resendTimer > 0 || resending}
+                className="w-full bg-gray-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-600 transition-colors"
+              >
+                {resending ? 'در حال ارسال…' : (resendTimer > 0 ? `ارسال مجدد کد (${resendTimer})` : 'ارسال مجدد کد')}
               </button>
               
               <button
@@ -654,7 +998,7 @@ const RandomVideoChatApp = () => {
               <button 
                 onClick={() => navigateToScreen('subscription')}
                 className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-                title="اشتراک و خرید"
+                title="خرید اشتراک"
               >
                 <Gift className="w-5 h-5 text-gray-700" />
               </button>
@@ -674,14 +1018,14 @@ const RandomVideoChatApp = () => {
             <div className="w-full h-full relative">
               {isSearching ? (
                 // نمایش رادار در تصویر اصلی هنگام جستجو
-                <div className="w-full h-full bg-black flex items-center justify-center">
+                <div className="w-full h-full bg-black flex flex-col items-center justify-center">
                   <div className="relative">
                     {/* رادار دایره‌ای کوچک وسط صفحه */}
                     <div className={`relative w-64 h-64 transition-opacity duration-400 ${fadeOutSearch ? 'opacity-0' : 'opacity-100'}`}>
                       {/* پس‌زمینه رادار */}
-                      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-950/50 via-blue-900/30 to-transparent">
+                      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-950/50 via-blue-900/30 to-transparent animate-spin" style={{ transformOrigin: 'center', animationDuration: '10s' }}>
                         {/* دایره‌های رادار */}
-                        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 200 200">
+                        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 200 200" style={rotateRadar ? { animation: 'spin 8s linear 1' } : undefined}>
                           <circle cx="100" cy="100" r="30" fill="none" stroke="rgba(59,130,246,0.2)" strokeWidth="1"/>
                           <circle cx="100" cy="100" r="60" fill="none" stroke="rgba(59,130,246,0.15)" strokeWidth="1"/>
                           <circle cx="100" cy="100" r="90" fill="none" stroke="rgba(59,130,246,0.1)" strokeWidth="1"/>
@@ -756,9 +1100,12 @@ const RandomVideoChatApp = () => {
                       </div>
                     )}
                   </div>
+                  {/* متن حالت جستجو */}
+                  {searchPhase !== 'found' && (
+                    <p className="mt-6 text-gray-300 text-sm text-center">در حال جستجوی گفتگو</p>
+                  )}
                 </div>
-              ) : isCallActive ? (
-                // بررسی وضعیت ویدیو کاربر مقابل
+            ) : isCallActive ? (
                 remoteVideoAvailable ? (
                   // ویدیو کاربر مقابل - تمام صفحه
                   <div className="w-full h-full bg-black flex items-center justify-center">
@@ -781,54 +1128,47 @@ const RandomVideoChatApp = () => {
                   <div className="w-full h-full bg-black flex items-center justify-center">
                     <Camera className="w-16 h-16 text-white" />
                   </div>
-                )
-              ) : (
-                // حالت انتظار - نمایش دوربین با انیمیشن
-                <div className="w-full h-full bg-gradient-to-br from-gray-800 via-gray-900 to-black flex items-center justify-center">
-                  <div className="text-center">
-                    <style>{`
-                      @keyframes pulseCamera {
-                        0%, 100% { 
-                          transform: scale(1);
-                          opacity: 0.7;
-                        }
-                        50% { 
-                          transform: scale(1.1);
-                          opacity: 1;
-                        }
-                      }
-                      @keyframes spin {
-                        from { transform: rotate(0deg); }
-                        to { transform: rotate(360deg); }
-                      }
-                      .camera-pulse {
-                        animation: pulseCamera 2s ease-in-out infinite;
-                      }
-                    `}</style>
-                    <div className="relative">
-                      {/* Circle background with gradient */}
-                      <div className="w-32 h-32 bg-gradient-to-br from-blue-500/30 to-purple-600/30 rounded-full flex items-center justify-center mb-4 mx-auto relative">
-                        {/* Animated ring */}
-                        <div className="absolute inset-0 rounded-full border-2 border-blue-400/30 animate-ping" />
-                        <div className="absolute inset-2 rounded-full border border-blue-300/20 animate-pulse" />
-                        
-                        {/* Camera icon with animation */}
-                        <Camera className="w-14 h-14 text-blue-400 camera-pulse relative z-10" />
+              )) : (
+                // حالت انتظار - نمایش رادار با کاربران آنلاین و متن راهنما
+                <div className="w-full h-full bg-black flex flex-col items-center justify-center">
+                    <div className="relative w-64 h-64 mx-auto">
+                      {/* پس‌زمینه رادار */}
+                      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-950/50 via-blue-900/30 to-transparent">
+                        {/* دایره‌های رادار */}
+                        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 200 200">
+                          <circle cx="100" cy="100" r="30" fill="none" stroke="rgba(59,130,246,0.2)" strokeWidth="1"/>
+                          <circle cx="100" cy="100" r="60" fill="none" stroke="rgba(59,130,246,0.15)" strokeWidth="1"/>
+                          <circle cx="100" cy="100" r="90" fill="none" stroke="rgba(59,130,246,0.1)" strokeWidth="1"/>
+                          {/* خطوط شبکه */}
+                          <line x1="100" y1="10" x2="100" y2="190" stroke="rgba(59,130,246,0.1)" strokeWidth="1"/>
+                          <line x1="10" y1="100" x2="190" y2="100" stroke="rgba(59,130,246,0.1)" strokeWidth="1"/>
+                          <line x1="30" y1="30" x2="170" y2="170" stroke="rgba(59,130,246,0.05)" strokeWidth="1"/>
+                          <line x1="170" y1="30" x2="30" y2="170" stroke="rgba(59,130,246,0.05)" strokeWidth="1"/>
+                        </svg>
+                        {/* نقاط کاربران آنلاین (قرمز) */}
+                        <div className="absolute top-[25%] left-[30%]">
+                          <div className="w-2 h-2 bg-red-500 rounded-full">
+                            <div className="absolute inset-0 bg-red-500 rounded-full animate-pulse" />
+                          </div>
+                        </div>
+                        <div className="absolute top-[45%] right-[25%]">
+                          <div className="w-2 h-2 bg-red-500 rounded-full">
+                            <div className="absolute inset-0 bg-red-500 rounded-full animate-pulse" />
+                          </div>
+                        </div>
+                        <div className="absolute bottom-[35%] left-[45%]">
+                          <div className="w-2 h-2 bg-red-500 rounded-full">
+                            <div className="absolute inset-0 bg-red-500 rounded-full animate-pulse" />
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <p className="text-gray-300 text-lg font-medium">در انتظار اتصال</p>
-                    <p className="text-gray-500 text-sm mt-2">برای جستجوی کاربر جدید دکمه سبز را بزنید</p>
-                    
-                    {/* Animated dots */}
-                    <div className="flex justify-center items-center gap-1 mt-4">
-                      <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{animationDelay: '0ms'}}></span>
-                      <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{animationDelay: '150ms'}}></span>
-                      <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{animationDelay: '300ms'}}></span>
+                    <div className="mt-6 text-center">
+                      <p className="text-white text-lg font-semibold">شروع گفتگو</p>
+                      <p className="text-gray-400 text-sm mt-2">برای جستجوی کاربر جدید دکمه آبی را بزنید</p>
                     </div>
                   </div>
-                </div>
               )}
-              
             </div>
             
 
@@ -889,11 +1229,30 @@ const RandomVideoChatApp = () => {
               
               {/* Report Button - گزارش کاربر */}
               <button 
-                onClick={() => navigateToScreen('report')}
+                onClick={openReportWithSnapshot}
                 className="w-8 h-8 bg-red-500/80 rounded-full flex items-center justify-center shadow-md hover:bg-red-600/80 transition-colors focus:outline-none"
                 title="گزارش کاربر"
               >
                 <Flag className="w-4 h-4 text-white" />
+              </button>
+
+              {/* Block Button - بلاک کردن کاربر مقابل (عدم نمایش مجدد) */}
+              <button 
+onClick={async () => {
+                  if (!currentChatUser?.id) { showToast('کاربر مقابل مشخص نیست', 'error'); return; }
+                  if (!confirm('آیا می‌خواهید این کاربر بلاک شود؟')) return;
+                  const ok = await apiBlockUser(currentChatUser.id);
+                  if (ok) {
+                    showToast('کاربر بلاک شد و دیگر با او گفتگو نخواهید کرد', 'success');
+                    nextUser();
+                  } else {
+                    showToast('بلاک کاربر با خطا مواجه شد', 'error');
+                  }
+                }}
+                className="w-8 h-8 bg-gray-700/80 rounded-full flex items-center justify-center shadow-md hover:bg-gray-600/80 transition-colors focus:outline-none"
+                title="بلاک کاربر"
+              >
+                <UserX className="w-4 h-4 text-white" />
               </button>
             </div>
           </div>
@@ -925,62 +1284,19 @@ const RandomVideoChatApp = () => {
 
             {/* Bottom Control Bar */}
             <div className="bg-white border-t border-gray-200 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                
-                {/* Right: Control Buttons - سمت راست برای راحتی دست راستی‌ها */}
-                <div className="flex items-center gap-2">
-                  {/* Stop/Start Video Button - دکمه متوقف/شروع ویدیو */}
-                  {isCallActive ? (
-                    <button
-                      onClick={stopVideoCall}
-                      className="w-14 h-14 bg-red-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors focus:outline-none"
-                      title="متوقف کردن ویدیو"
-                    >
-                      <Pause className="w-6 h-6 text-white" />
-                    </button>
-                  ) : isSearching ? (
-                    <button
-                      onClick={stopVideoCall}
-                      className="w-14 h-14 bg-red-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors focus:outline-none"
-                      title="متوقف کردن جستجو"
-                    >
-                      <Pause className="w-6 h-6 text-white" />
-                    </button>
+              {/* Mobile: پیش‌نمایش بزرگ چپ، بالایش ورودی، پایین دکمه‌ها | Desktop: ترتیب کنترل‌ها-ورودی-پیش‌نمایش */}
+              <div className="grid grid-cols-3 gap-3 md:flex md:items-center">
+                {/* Preview - موبایل: ستون 3 با ارتفاع دو ردیف | دسکتاپ: راست کوچک */}
+                <div className="relative col-span-1 col-start-3 row-start-1 row-span-2 w-full aspect-square bg-black rounded-lg overflow-hidden flex-shrink-0 md:static md:order-3 md:w-16 md:h-16 md:col-auto md:row-auto">
+                  {localStreamRef.current ? (
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
-                    <button
-                      onClick={startVideoCall}
-                      className="w-14 h-14 bg-green-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-green-600 transition-colors focus:outline-none"
-                      title="شروع مجدد ویدیو"
-                    >
-                      <Play className="w-6 h-6 text-white" />
-                    </button>
-                  )}
-                  
-                  {/* Next User Button - همیشه نمایش داده می‌شود */}
-                  <button
-                    onClick={nextUser}
-                    className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-blue-600 transition-colors focus:outline-none"
-                    title="کاربر بعدی"
-                  >
-                    <RotateCcw className="w-6 h-6 text-white" />
-                  </button>
-                </div>
-                
-                {/* Left: Input & Small Video Preview - سمت چپ */}
-                <div className="flex items-center gap-3 flex-1">
-                  {/* Message Input */}
-                  <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                    placeholder="پیام خود را بنویسید..."
-                    className="flex-1 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm text-gray-800 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
-                    dir="rtl"
-                  />
-                  
-                  {/* Self Video Preview - دوربین کوچیک در سمت چپ */}
-                  <div className="w-16 h-16 bg-gradient-to-br from-gray-700 to-gray-800 rounded-lg overflow-hidden flex-shrink-0 relative">
                     <div className="w-full h-full flex items-center justify-center">
                       {isCameraOn ? (
                         <Camera className="w-6 h-6 text-gray-400" />
@@ -990,17 +1306,89 @@ const RandomVideoChatApp = () => {
                         </div>
                       )}
                     </div>
-                    {/* Status Icons */}
-                    <div className="absolute bottom-0.5 right-0.5 flex gap-1">
-                      {isCameraOn && <span className="text-xs">📹</span>}
-                      {!isMicOn && <span className="text-xs">🔇</span>}
-                    </div>
-                  </div>
+                  )}
+                  {/* Switch: پایین-چپ در موبایل، پایین-راست در دسکتاپ */}
+                  <button
+                    onClick={switchCamera}
+                    className="absolute bottom-1 left-1 w-7 h-7 rounded-full bg-white/85 text-gray-700 flex items-center justify-center shadow hover:bg-white"
+                    title="چرخش دوربین"
+                    type="button"
+                  >
+                    <RefreshCcw className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Input - چپِ پیش‌نمایش در موبایل | وسط در دسکتاپ */}
+                <div className="relative col-span-2 col-start-1 row-start-1 md:flex-1 md:order-2 md:col-auto md:row-auto">
+                  <input
+                    type="text"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                    placeholder="پیام خود را بنویسید..."
+                    className="w-full bg-white border border-gray-200 rounded-xl pr-4 pl-12 py-4 md:py-2 text-sm text-gray-800 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                    dir="rtl"
+                  />
+                  <button
+                    onClick={sendMessage}
+                    disabled={!newMessage.trim()}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full flex items-center justify-center text-blue-600 hover:text-blue-700 disabled:text-gray-400 focus:outline-none"
+                    title="ارسال پیام"
+                    type="button"
+                  >
+                    <Send className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Mobile Controls - زیر ورودی در سمت چپ پیش‌نمایش */}
+                <button
+                  onClick={startVideoCall}
+                  className="md:hidden col-span-1 col-start-1 row-start-2 h-20 bg-blue-600 rounded-xl flex items-center justify-center shadow text-white"
+                  title="شروع"
+                >
+                  <Play className="w-6 h-6" />
+                </button>
+                <button
+                  onClick={stopVideoCall}
+                  className="md:hidden col-span-1 col-start-2 row-start-2 h-20 bg-rose-300 rounded-xl flex items-center justify-center shadow text-white"
+                  title="توقف"
+                >
+                  <Square className="w-6 h-6" />
+                </button>
+
+                {/* Desktop Controls Group - چپ */}
+                <div className="hidden md:flex items-center gap-2 md:order-1">
+                  <button
+                    onClick={startVideoCall}
+                    className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-blue-600 transition-colors focus:outline-none"
+                    title="پلی / شروع"
+                  >
+                    <Play className="w-6 h-6 text-white" />
+                  </button>
+                  <button
+                    onClick={stopVideoCall}
+                    className="w-14 h-14 bg-red-500 rounded-xl flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors focus:outline-none"
+                    title="توقف"
+                  >
+                    <Square className="w-6 h-6 text-white" />
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Toasts - non-blocking notifications */}
+        {toasts.length > 0 && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[92%] max-w-sm space-y-2">
+            {toasts.map(t => (
+              <div key={t.id} className={`rounded-xl px-4 py-2 text-white shadow-lg border 
+                ${t.type === 'success' ? 'bg-green-600/90 border-green-400/50' : t.type === 'error' ? 'bg-red-600/90 border-red-400/50' : 'bg-gray-900/90 border-white/10'}` }>
+                <div className="text-sm leading-relaxed">{t.text}</div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Side Menu - Enhanced functional menu */}
         {showMenu && (
@@ -1021,10 +1409,10 @@ const RandomVideoChatApp = () => {
                 <div className="bg-gray-800 p-4 rounded-xl mb-6">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
-                      <span className="text-white font-bold">{phoneNumber.slice(-2)}</span>
+                      <User className="w-7 h-7 text-white" />
                     </div>
                     <div>
-                      <p className="text-white font-medium">{phoneNumber}</p>
+                      <p className="text-white font-medium">{loginId || phoneNumber}</p>
                       <p className="text-gray-400 text-sm">
                         {subscriptionDays > 0 ? `کاربر ویژه (${subscriptionDays} روز)` : 'کاربر عادی'}
                       </p>
@@ -1058,7 +1446,7 @@ const RandomVideoChatApp = () => {
                   className="w-full bg-gray-800 hover:bg-gray-700 text-white p-4 rounded-xl flex items-center gap-3 transition-colors"
                 >
                   <Gift className="w-6 h-6" />
-                  <span>اشتراک و خرید</span>
+                  <span>خرید اشتراک</span>
                 </button>
                 
                 <button 
@@ -1112,7 +1500,7 @@ const RandomVideoChatApp = () => {
                 {/* خروج */}
                 <button 
                   onClick={() => {
-                    if (confirm('آیا مطمئن هستید؟')) {
+                    if (confirm('آیا می‌خواهید از حساب کاربری خود خارج شوید؟')) {
                       setCurrentScreen('login');
                       setPhoneNumber('');
                       setVerificationCode('');
@@ -1166,10 +1554,44 @@ const RandomVideoChatApp = () => {
             alert('🎉 اشتراک هدیه با موفقیت خریداری شد!\nهدیه‌گیرنده نوتیفیکیشن دریافت کرد.');
           }}
         />
+
+        {/* Lock Purchase Modal */}
+        {showLockPurchasePopup && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] grid place-items-center p-4" onClick={() => setShowLockPurchasePopup(false)}>
+            <div className="relative bg-white rounded-2xl p-6 w-full max-w-md border border-gray-200 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => setShowLockPurchasePopup(false)} aria-label="بستن" className="absolute top-3 right-3 p-1 rounded-full hover:bg-gray-100 focus:outline-none">
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+              <h2 className="text-gray-900 text-lg font-bold mb-2 text-center">خرید قفل</h2>
+              <p className="text-gray-600 text-sm text-center mb-4">برای قفل کردن کاربر و جلوگیری از رد کردن شما، نیاز به خرید قفل دارید.</p>
+              <div className="space-y-2 mt-2">
+                <button
+                  onClick={() => {
+                    setLockCount(lockCount + 5);
+                    setShowLockPurchasePopup(false);
+                    alert('✅ 5 قفل به حساب شما اضافه شد');
+                  }}
+                  className="w-full bg-purple-600 hover:bg-purple-700 text-white py-2 rounded-xl font-medium"
+                >
+                  خرید 5 قفل
+                </button>
+                <button
+                  onClick={() => {
+                    setShowLockPurchasePopup(false);
+                    navigateToScreen('subscription');
+                  }}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl font-medium"
+                >
+                  خرید اشتراک
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         
         {/* پاپ‌آپ مسدودی کاربر */}
-        {showBanPopup && userBanStatus.isBanned && userBanStatus.banUntil && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+{showBanPopup && userBanStatus.isBanned && userBanStatus.banUntil && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] grid place-items-center p-4">
             <div className="bg-red-900/90 backdrop-blur-xl rounded-2xl p-6 border border-red-600/50 shadow-2xl max-w-md w-full">
               <div className="text-center">
                 <div className="w-16 h-16 bg-red-500 rounded-full mx-auto mb-4 flex items-center justify-center">
@@ -1197,6 +1619,66 @@ const RandomVideoChatApp = () => {
                 >
                   تایید
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* انتخاب کاربر برای گزارش/بلاک - مطابق اسکرین‌شات */}
+        {showReportSelect && (
+          <div className="fixed inset-0 bg-black/50 z-[120] grid place-items-center p-4" onClick={() => setShowReportSelect(false)}>
+            <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-gray-800 text-sm font-bold mb-3 text-center">Please select a user</h3>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {(lastSnapshots.length > 0 ? lastSnapshots : lastThreeUsers).slice(0,3).map((item: any, idx: number) => {
+                  const uid = item.userId || item.id;
+                  const selected = selectedSuspectId === uid;
+                  const imgSrc = item.url || item.avatar;
+                  return (
+                    <button key={uid || idx} onClick={() => setSelectedSuspectId(uid)}
+                      className={`rounded-lg border overflow-hidden relative ${selected ? 'border-red-400' : 'border-gray-300'}`}>
+                      {imgSrc ? (
+                        <img src={imgSrc} alt={`u${idx}`} className="w-full h-20 object-cover" />
+                      ) : (
+                        <div className="w-full h-20 bg-gray-200" />
+                      )}
+                      {selected && (
+                        <span className="absolute top-1 left-1 w-5 h-5 bg-red-500 rounded-full" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="space-y-2">
+                <button
+                  disabled={!selectedSuspectId}
+                  onClick={() => {
+                    if (!selectedSuspectId) return;
+                    setShowReportSelect(false);
+                    // ادامه‌ی فرآیند گزارش: انتخاب دلیل در صفحه بعدی
+                    navigateToScreen('report');
+                  }}
+                  className={`w-full py-2 rounded-lg font-medium ${selectedSuspectId ? 'bg-rose-500 text-white' : 'bg-rose-300 text-white/70 cursor-not-allowed'}`}
+                >
+                  Report abuse
+                </button>
+                <button
+                  disabled={!selectedSuspectId}
+                  onClick={async () => {
+                    if (!selectedSuspectId) return;
+                    const ok = await apiBlockUser(selectedSuspectId);
+                    if (ok) {
+                      showToast('کاربر بلاک شد', 'success');
+                      setShowReportSelect(false);
+                    } else {
+                      showToast('بلاک کاربر با خطا مواجه شد', 'error');
+                    }
+                  }}
+                  className={`w-full py-2 rounded-lg font-medium ${selectedSuspectId ? 'bg-rose-500 text-white' : 'bg-rose-300 text-white/70 cursor-not-allowed'}`}
+                >
+                  Block user
+                </button>
+                <button onClick={() => setShowReportSelect(false)} className="w-full py-2 rounded-lg bg-gray-200 text-gray-800 font-medium">Cancel</button>
               </div>
             </div>
           </div>
@@ -1253,40 +1735,37 @@ const RandomVideoChatApp = () => {
         </div>
         
         {/* Overlay شیشه‌ای گزارش */}
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white/85 backdrop-blur-xl rounded-2xl p-6 border border-white/30 shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <h2 className="text-gray-800 text-lg font-bold mb-4 text-center">گزارش تخلف و مسدود کردن</h2>
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => goBack()}>
+          <div className="relative bg-white/85 backdrop-blur-xl rounded-2xl p-6 border border-white/30 shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <button onClick={goBack} aria-label="بستن" className="absolute top-3 right-3 p-1 rounded-full hover:bg-gray-100 focus:outline-none">
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
+            <h2 className="text-gray-800 text-lg font-bold mb-2 text-center">گزارش تخلف</h2>
+            <p className="text-gray-600 text-xs text-center mb-4">برای جلوگیری از اشتباه، تصویر پروفایل نمایش داده نمی‌شود. لطفاً کاربر مورد نظر را از بین گزینه‌های زیر انتخاب کنید.</p>
             
-            {/* نمایش ۳ کاربر اخیر */}
-            {lastThreeUsers.length > 0 && (
+            {/* نمایش اسنپ‌شات‌های آخرین گفتگوها */}
+            {(lastSnapshots.length > 0 || lastThreeUsers.length > 0) && (
               <div className="mb-4">
-                <h3 className="text-gray-800 font-semibold mb-2 text-sm">کاربران اخیر:</h3>
+                <h3 className="text-gray-800 font-semibold mb-2 text-sm">انتخاب کاربر:</h3>
                 <div className="grid grid-cols-3 gap-2">
-                  {lastThreeUsers.map((user) => (
-                    <div key={user.id} className="bg-gray-100/70 p-2 rounded-lg text-center border border-gray-200">
-                      <img 
-                        src={user.avatar} 
-                        alt={user.name}
-                        className="w-10 h-10 rounded-full mx-auto mb-1"
-                      />
-                      <p className="text-gray-700 text-xs">{user.name}</p>
-                      <div className="mt-1 space-y-1">
-                        <button
-                          onClick={() => blockUser(user.id, 24)}
-                          className="w-full bg-orange-500 text-white text-xs py-0.5 rounded hover:bg-orange-600 transition-colors"
-                        >
-                          محدود ۲۴ه
-                        </button>
-                        <button
-                          onClick={() => blockUser(user.id)}
-                          className="w-full bg-red-500 text-white text-xs py-0.5 rounded hover:bg-red-600 transition-colors"
-                        >
-                          بلاک دائم
-                        </button>
-                      </div>
-                    </div>
+                  {(lastSnapshots.length > 0 ? lastSnapshots : lastThreeUsers).slice(0, 6).map((item: any, idx: number) => (
+                    <button
+                      key={item.id}
+                      onClick={() => setSelectedSuspectId(item.userId || item.id)}
+                      className={`p-1.5 rounded-lg border text-center transition-colors ${selectedSuspectId === (item.userId || item.id) ? 'bg-blue-100 border-blue-400' : 'bg-gray-100/70 border-gray-300 hover:bg-gray-200/70'}`}
+                    >
+                      {item.url ? (
+                        <img src={item.url} alt={`snap_${idx}`} className="w-full h-16 object-cover rounded-md mb-1" />
+                      ) : (
+                        <div className="w-full h-16 bg-gradient-to-r from-blue-500 to-purple-600 rounded-md flex items-center justify-center mb-1">
+                          <User className="w-6 h-6 text-white" />
+                        </div>
+                      )}
+                      <p className="text-gray-700 text-xs">گزینه {idx + 1}</p>
+                    </button>
                   ))}
                 </div>
+                <p className="text-gray-500 text-[11px] mt-2">اگر مطمئن نیستید، می‌توانید بدون انتخاب نیز گزارش را ارسال کنید تا پشتیبانی بررسی کند.</p>
               </div>
             )}
             
@@ -1295,9 +1774,42 @@ const RandomVideoChatApp = () => {
               {['محتوای نامناسب', 'زبان نامناسب', 'رفتار غیراخلاقی', 'هرزنگاری', 'سایر موارد'].map((reason) => (
                 <button
                   key={reason}
-                  onClick={() => {
-                    reportUser(reason);
-                    alert(`🚩 گزارش برای "${reason}" ارسال شد`);
+                  onClick={async () => {
+                    // نگاشت دلیل به کلیدهای بک‌اند
+                    const map: Record<string, string> = {
+                      'محتوای نامناسب': 'inappropriate_content',
+                      'زبان نامناسب': 'inappropriate_language',
+                      'رفتار غیراخلاقی': 'immoral_behavior',
+                      'هرزنگاری': 'spam',
+                      'سایر موارد': 'other'
+                    };
+                    const vKey = map[reason] || 'other';
+                    const evidenceUrl = lastSnapshots[0]?.url;
+                    // اگر شناسه واقعی کاربر نداریم، بدون reportedUserId ارسال می‌کنیم تا پشتیبانی تعیین کند
+                    // تلاش برای ارسال فیلدهای کمکی فقط در صورت معتبر بودن (ObjectId)
+                    const objectIdRegex = /^[a-f\d]{24}$/i;
+                    const candidates = (lastThreeUsers || [])
+                      .map(u => u.id)
+                      .filter(id => objectIdRegex.test(id))
+                      .slice(0, 6);
+                    const suggestedId = selectedSuspectId && objectIdRegex.test(selectedSuspectId) ? selectedSuspectId : undefined;
+
+                    const payload: any = {
+                      violationType: vKey,
+                      description: selectedSuspectId ? `Suspect: ${selectedSuspectId}` : undefined,
+                      evidence: evidenceUrl ? [evidenceUrl] : [],
+                    };
+                    if (candidates.length) payload.candidateUserIds = candidates;
+                    if (suggestedId) payload.suggestedReportedUserId = suggestedId;
+
+                    const ok = await submitReport(payload);
+                    if (ok) {
+                      alert(`🚩 گزارش برای "${reason}" ثبت شد و در حال بررسی است`);
+                      setSelectedSuspectId(null);
+                      goBack();
+                    } else {
+                      alert('ارسال گزارش با خطا مواجه شد. لطفاً بعداً تلاش کنید.');
+                    }
                   }}
                   className="w-full bg-gray-100/70 text-gray-800 p-3 rounded-lg text-right hover:bg-gray-200/70 transition-colors text-sm border border-gray-300"
                 >
@@ -1347,7 +1859,7 @@ const RandomVideoChatApp = () => {
                     </div>
                   </div>
                   <p className="text-gray-300 text-lg font-medium">در انتظار اتصال</p>
-                  <p className="text-gray-500 text-sm mt-2">برای جستجوی کاربر جدید دکمه سبز را بزنید</p>
+<p className="text-gray-500 text-sm mt-2">برای جستجوی کاربر جدید دکمه آبی را بزنید</p>
                 </div>
               </div>
             </div>
@@ -1391,7 +1903,7 @@ const RandomVideoChatApp = () => {
         <ChatBackground />
         
         {/* Overlay پاپ‌آپ */}
-        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 flex items-center justify-center" onClick={goBack}>
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 grid place-items-center" onClick={goBack}>
           <div className="max-w-md w-full" onClick={(e) => e.stopPropagation()}>
             <div className="bg-black/70 backdrop-blur-lg rounded-2xl p-6 border border-white/30 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-white text-xl font-bold mb-6 text-center">خرید اشتراک</h2>
@@ -1463,10 +1975,8 @@ const RandomVideoChatApp = () => {
   }
 
   // Friends Screen - با overlay شیشه‌ای
-  if (currentScreen === 'friends') {
-    const hasSubscription = subscriptionDays > 0;
-    
-    // کامپوننت پس‌زمینه صفحه چت
+if (currentScreen === 'friends') {
+    // پس‌زمینه صفحه چت (برای محو شدن)
     const ChatBackground = () => (
       <div className="min-h-screen bg-gray-50 relative overflow-hidden">
         <div className="h-screen flex flex-col">
@@ -1493,7 +2003,7 @@ const RandomVideoChatApp = () => {
                     </div>
                   </div>
                   <p className="text-gray-300 text-lg font-medium">در انتظار اتصال</p>
-                  <p className="text-gray-500 text-sm mt-2">برای جستجوی کاربر جدید دکمه سبز را بزنید</p>
+                  <p className="text-gray-500 text-sm mt-2">برای جستجوی کاربر جدید دکمه آبی را بزنید</p>
                 </div>
               </div>
             </div>
@@ -1509,11 +2019,11 @@ const RandomVideoChatApp = () => {
             <div className="bg-white border-t border-gray-200 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
-                  <button className="w-14 h-14 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <Play className="w-6 h-6 text-white" />
+                  <button className="w-14 h-14 bg-red-500 rounded-xl flex items-center justify-center shadow-lg">
+                    <Square className="w-6 h-6 text-white" />
                   </button>
                   <button className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <RotateCcw className="w-6 h-6 text-white" />
+                    <Play className="w-6 h-6 text-white" />
                   </button>
                 </div>
                 <div className="flex items-center gap-3 flex-1">
@@ -1530,100 +2040,54 @@ const RandomVideoChatApp = () => {
         </div>
       </div>
     );
-    
+
+    // کپی لینک دعوت
+    const copyInvite = () => {
+      const code = 'INVITE' + (phoneNumber ? String(phoneNumber).slice(-4) : '1545');
+      const link = `https://videochat.app/invite/${code}`;
+      try { navigator.clipboard.writeText(link); } catch {}
+      alert('لینک دعوت کپی شد!');
+    };
+
     return (
       <>
-        {/* صفحه چت در پس‌زمینه */}
         <ChatBackground />
-        
-        {/* Overlay پاپ‌آپ */}
-        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 flex items-center justify-center" onClick={goBack}>
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-lg p-4 flex items-center justify-center" onClick={goBack}>
           <div className="max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-black/70 backdrop-blur-lg rounded-2xl p-6 border border-white/30 shadow-2xl max-h-[90vh] overflow-y-auto">
-            {/* عنوان جدید */}
-            <h2 className="text-white text-xl font-bold mb-2 text-center">
-              دوستان خود را دعوت کنید و جایزه بگیرید
-            </h2>
-            
-            <div className="text-center mb-6">
-              <div className="w-16 h-16 bg-gradient-to-r from-pink-500 to-red-500 rounded-full mx-auto mb-4 flex items-center justify-center">
-                <UserPlus className="w-8 h-8 text-white" />
+            <div className="bg-black/70 backdrop-blur-lg rounded-2xl p-6 border border-white/20 shadow-2xl">
+              <div className="text-center">
+                <div className="w-14 h-14 mx-auto mb-3 bg-pink-500/30 rounded-full flex items-center justify-center">
+                  <UserPlus className="w-7 h-7 text-pink-300" />
+                </div>
+                <h2 className="text-white text-lg font-bold mb-1">معرفی به دوستان</h2>
+                <p className="text-gray-300 text-sm mb-4">دوستان خود را دعوت کنید و اشتراک رایگان بگیرید!</p>
               </div>
-              <p className="text-gray-300 text-sm">
-                با دعوت دوستانتان جوایز ارزشمندی دریافت کنید
-              </p>
-            </div>
 
-            {/* نمایش پاداش بر اساس وضعیت اشتراک */}
-            <div className="bg-gray-800/50 p-4 rounded-xl mb-6">
-              <h3 className="text-white font-bold mb-2">پاداش دعوت طبق طرح:</h3>
-              <div className="bg-blue-900/30 border border-blue-600 p-3 rounded-lg mb-3">
-                <h4 className="text-yellow-400 font-bold mb-2">🎁 برای همه کاربران:</h4>
-                <ul className="text-gray-300 text-sm space-y-1">
-                  <li>• در صورتی که خرید اشتراک فعال باشد</li>
-                  <li>• به ازای هر چند نفر دعوت، چه اشتراک رایگان دریافت می‌کنند</li>
-                  <li>• دعوت شده اگر با شماره تلفن خود ثبت نام کند</li>
-                  <li>• در قسمت دوستان پنل کاربری ثبت می‌شود</li>
+              <div className="bg-black/30 rounded-xl p-4 text-right mb-4 border border-white/10">
+                <div className="text-white font-semibold mb-2 text-sm">مزایای دعوت:</div>
+                <ul className="text-gray-300 text-sm list-disc pr-5 space-y-1">
+                  <li>به ازای هر ۵ دعوت، ۱ ماه اشتراک رایگان</li>
+                  <li>دوستان شما ۱۰٪ تخفیف دریافت می‌کنند</li>
+                  <li>امتیاز ویژه برای کاربران فعال</li>
                 </ul>
               </div>
-              {hasSubscription ? (
-                <ul className="text-green-300 text-sm space-y-1">
-                  <li className="text-green-400 font-bold">✅ شما اشتراک دارید:</li>
-                  <li>• به ازای هر ۵ دعوت، ۱ ماه اشتراک رایگان</li>
-                  <li>• دوستان شما ۱۰٪ تخفیف دریافت می‌کنند</li>
-                  <li>• امتیازات ویژه VIP</li>
-                </ul>
-              ) : (
-                <ul className="text-orange-300 text-sm space-y-1">
-                  <li className="text-orange-400 font-bold">⚠️ شما اشتراک ندارید:</li>
-                  <li>• به ازای هر ۳ دعوت، ۵ قفل رایگان</li>
-                  <li>• دوستان شما ۲ قفل رایگان دریافت می‌کنند</li>
-                  <li className="text-yellow-400">✨ برای پاداش بیشتر اشتراک تهیه کنید</li>
-                </ul>
-              )}
-            </div>
 
-            <button
-              onClick={inviteFriend}
-              className="w-full bg-gradient-to-r from-pink-500 to-red-500 text-white py-4 rounded-xl font-bold mb-4"
-            >
-              ارسال لینک دعوت
-            </button>
+              <button
+                onClick={copyInvite}
+                className="w-full bg-gradient-to-r from-pink-500 to-rose-500 text-white py-3 rounded-xl font-bold mb-4 hover:from-pink-600 hover:to-rose-600 transition-colors"
+              >
+                ارسال لینک دعوت
+              </button>
 
-            {/* کد دعوت شخصی */}
-            <div className="bg-blue-900/30 border border-blue-600 p-4 rounded-xl mb-4">
-              <h4 className="text-white font-bold mb-2">کد دعوت شما:</h4>
-              <div className="bg-black/50 px-3 py-2 rounded-lg font-mono text-yellow-400 text-center text-lg">
-                INVITE{phoneNumber.slice(-4)}
+              <div className="bg-black/30 rounded-xl p-4 text-right border border-white/10">
+                <div className="text-white font-semibold mb-2 text-sm">دوستان دعوت شده</div>
+                <p className="text-gray-400 text-xs">هنوز کسی را دعوت نکرده‌اید</p>
               </div>
-            </div>
 
-            <div className="bg-gray-800/30 p-4 rounded-xl">
-              <h4 className="text-white font-bold mb-2">دعوت‌های شما</h4>
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-gray-400">تعداد دعوت شده:</span>
-                <span className="text-white font-bold">{friends.length}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-400">پاداش قابل دریافت:</span>
-                <span className="text-green-400 font-bold">
-                  {hasSubscription ? 
-                    `${Math.floor(friends.length / 5)} ماه اشتراک` : 
-                    `${Math.floor(friends.length / 3) * 5} قفل`
-                  }
-                </span>
-              </div>
+              <button onClick={goBack} className="w-full mt-6 bg-gray-600 hover:bg-gray-700 text-white py-2.5 rounded-xl">بازگشت</button>
             </div>
-            
-            <button
-              onClick={goBack}
-              className="w-full mt-6 bg-gray-600 text-white py-3 rounded-xl"
-            >
-              بازگشت
-            </button>
           </div>
         </div>
-      </div>
       </>
     );
   }
@@ -1676,9 +2140,6 @@ const RandomVideoChatApp = () => {
                   <button className="w-14 h-14 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
                     <Play className="w-6 h-6 text-white" />
                   </button>
-                  <button className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <RotateCcw className="w-6 h-6 text-white" />
-                  </button>
                 </div>
                 <div className="flex items-center gap-3 flex-1">
                   <input className="flex-1 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm" placeholder="پیام خود را بنویسید..." disabled />
@@ -1701,7 +2162,7 @@ const RandomVideoChatApp = () => {
         <ChatBackground />
         
         {/* Overlay پاپ‌آپ */}
-        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 flex items-center justify-center" onClick={goBack}>
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 grid place-items-center" onClick={goBack}>
           <div className="max-w-md w-full" onClick={(e) => e.stopPropagation()}>
             <div className="bg-black/70 backdrop-blur-lg rounded-2xl p-6 border border-white/30 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-white text-xl font-bold mb-6 text-center">قوانین استفاده</h2>
@@ -1809,9 +2270,6 @@ const RandomVideoChatApp = () => {
                   <button className="w-14 h-14 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
                     <Play className="w-6 h-6 text-white" />
                   </button>
-                  <button className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <RotateCcw className="w-6 h-6 text-white" />
-                  </button>
                 </div>
                 <div className="flex items-center gap-3 flex-1">
                   <input className="flex-1 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm" placeholder="پیام خود را بنویسید..." disabled />
@@ -1834,7 +2292,7 @@ const RandomVideoChatApp = () => {
         <ChatBackground />
         
         {/* Overlay پاپ‌آپ */}
-        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 flex items-center justify-center" onClick={goBack}>
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm p-4 grid place-items-center" onClick={goBack}>
           <div className="max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
             <div className="bg-black/70 backdrop-blur-lg rounded-2xl p-4 border border-white/30 shadow-2xl max-h-[85vh] overflow-hidden">
             <div className="flex items-center justify-between mb-4">
@@ -1871,13 +2329,14 @@ const RandomVideoChatApp = () => {
                           {notif.type === 'info' && <Info className="w-4 h-4 text-blue-400" />}
                           {notif.type === 'offer' && <Gift className="w-4 h-4 text-yellow-400" />}
                           {notif.type === 'reward' && <Heart className="w-4 h-4 text-pink-400" />}
+                          {notif.type === 'lock' && <Lock className="w-4 h-4 text-purple-400" />}
                           <h3 className="text-white font-bold text-sm">{notif.title}</h3>
                         </div>
                         {!notif.read && (
                           <span className="bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full">جدید</span>
                         )}
                       </div>
-                      <p className="text-gray-300 text-xs mb-2">{processedMessage}</p>
+                      <p className="text-gray-300 text-xs mb-2">{sanitizeMessageText(processedMessage)}</p>
                       
                       {/* دکمه‌های تعبیه شده */}
                       {buttons.length > 0 && (
@@ -1988,9 +2447,6 @@ const RandomVideoChatApp = () => {
                   <button className="w-14 h-14 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
                     <Play className="w-6 h-6 text-white" />
                   </button>
-                  <button className="w-14 h-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <RotateCcw className="w-6 h-6 text-white" />
-                  </button>
                 </div>
                 <div className="flex items-center gap-3 flex-1">
                   <input className="flex-1 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm" placeholder="پیام خود را بنویسید..." disabled />
@@ -2020,9 +2476,7 @@ const RandomVideoChatApp = () => {
             
             <div className="text-center mb-6">
               <div className="w-20 h-20 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full mx-auto mb-4 flex items-center justify-center">
-                <span className="text-white text-2xl font-bold">
-                  {phoneNumber.slice(-2)}
-                </span>
+                <User className="w-10 h-10 text-white" />
               </div>
               <p className="text-white font-medium">{phoneNumber}</p>
               {currentUser.subscription ? (

@@ -20,6 +20,7 @@ const subscriptionRoutes = require('./routes/subscriptions');
 const paymentRoutes = require('./routes/payments');
 const reportRoutes = require('./routes/reports');
 const chatRoutes = require('./routes/chat');
+const referralRoutes = require('./routes/referrals');
 
 // Middleware
 const { auth } = require('./middleware/auth');
@@ -114,8 +115,13 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/reports', auth, reportRoutes);
 app.use('/api/chat', auth, chatRoutes);
+app.use('/api/referrals', auth, referralRoutes);
 // Branding (icon upload/serve) - no auth for simplicity
 app.use('/api/branding', require('./routes/branding'));
+// App Settings (branding texts, legal flags)
+app.use('/api/settings', require('./routes/settings'));
+// Public rules (active only) for client display
+app.use('/api/public/rules', require('./routes/publicRules'));
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {

@@ -17,6 +17,20 @@ const NotificationPopup: React.FC<NotificationPopupProps> = ({ open, onOpenChang
     if (!isControlled) setInternalOpen(v);
   };
 
+  const sanitizeText = (t: string) => t
+    // localhost/dev
+    .replace(/https?:\/\/(localhost|127\.0\.0\.1|local)(:\\d+)?\S*/gi, '')
+    .replace(/\blocal:3001\b/gi, '')
+    // private LAN IPs
+    .replace(/https?:\/\/((10|192\.168|172\.(1[6-9]|2[0-9]|3[0-1]))(?:\.\d{1,3}){2})(:\\d+)?\S*/gi, '')
+    // file scheme
+    .replace(/file:\/\/\S*/gi, '')
+    // Windows paths
+    .replace(/\b[A-Za-z]:[\\\/][^\s]+/g, '')
+    // Unix-like absolute paths
+    .replace(/\/(Users|home|var|etc|opt|tmp|srv|media|mnt|Volumes|root)\/[\S]+/g, '')
+    .trim();
+
   const [notifications, setNotifications] = useState([
     {
       id: 1,
@@ -153,7 +167,7 @@ const NotificationPopup: React.FC<NotificationPopupProps> = ({ open, onOpenChang
   }, [embedded, autoHideOnView, showPopup]);
 
   const modal = (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm grid place-items-center z-50 p-4">
       <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl w-full max-w-md border border-gray-600 max-h-[80vh] flex flex-col">
         {/* Header - Smaller - Fixed */}
         <div className="relative bg-gradient-to-r from-blue-600 to-purple-700 p-4 flex-shrink-0">
@@ -315,8 +329,8 @@ const NotificationPopup: React.FC<NotificationPopupProps> = ({ open, onOpenChang
 
                   {/* Message Content - Smaller */}
                   <div className="mb-2">
-                    <p className={`text-xs leading-relaxed ${!notification.read ? 'text-gray-200' : 'text-gray-400'}`}>
-                      {notification.message}
+                        <p className={`text-xs leading-relaxed ${!notification.read ? 'text-gray-200' : 'text-gray-400'}`}>
+                      {sanitizeText(notification.message)}
                     </p>
                   </div>
 
@@ -375,7 +389,7 @@ const NotificationPopup: React.FC<NotificationPopupProps> = ({ open, onOpenChang
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 p-4 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 p-4 grid place-items-center">
       {/* Trigger Button */}
       <button
         onClick={() => setShowPopup(true)}

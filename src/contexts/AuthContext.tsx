@@ -12,7 +12,7 @@ export interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   isAdmin: boolean;
-  login: (phone: string, code: string) => void;
+  login: (login: string, password: string) => Promise<void>;
   loginAsAdmin: () => void;
   logout: () => void;
 }
@@ -54,12 +54,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isAdmin = useMemo(() => user?.role === 'admin', [user]);
 
-  const login = (phone: string, code: string) => {
-    // For demo: accept any phone/code; assign role user
-    const fake = createFakeJwt({ role: 'user', phone, code });
-    localStorage.setItem('token', fake);
-    setToken(fake);
-    setUser({ role: 'user', phone });
+  const login = async (loginId: string, password: string) => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login: loginId, password })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || 'ورود ناموفق بود');
+    }
+    const data = await res.json();
+    const t = data.token as string;
+    localStorage.setItem('token', t);
+    setToken(t);
+    const payload = parseJwt(t);
+    const role = data.user?.role || payload?.role || 'user';
+    const uname = data.user?.username || data.user?.email || loginId;
+    setUser({ role, phone: uname });
   };
 
   const loginAsAdmin = () => {

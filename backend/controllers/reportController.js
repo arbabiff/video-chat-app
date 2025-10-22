@@ -10,63 +10,82 @@ const snapshotService = require('../services/snapshotService');
 // @access  Private
 const submitReport = async (req, res, next) => {
   try {
-    const { reportedUserId, violationType, description, evidence } = req.body;
+    const { reportedUserId, violationType, description, evidence, candidateUserIds = [], suggestedReportedUserId } = req.body;
     const reporterId = req.user.id;
 
-    // Validate reported user exists
-    const reportedUser = await User.findById(reportedUserId);
-    if (!reportedUser) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: 'کاربر گزارش شده یافت نشد',
-          englishMessage: 'Reported user not found'
-        }
+    let report;
+
+    if (reportedUserId) {
+      // Validate reported user exists
+      const reportedUser = await User.findById(reportedUserId);
+      if (!reportedUser) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'کاربر گزارش شده یافت نشد',
+            englishMessage: 'Reported user not found'
+          }
+        });
+      }
+
+      // Prevent self-reporting
+      if (reporterId === reportedUserId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            message: 'نمی‌توانید خودتان را گزارش کنید',
+            englishMessage: 'Cannot report yourself'
+          }
+        });
+      }
+
+      // Check if user has already reported this user for same violation recently
+      const existingReport = await Report.findOne({
+        reporterId,
+        reportedUserId,
+        violationType,
+        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Within last 24 hours
       });
-    }
 
-    // Prevent self-reporting
-    if (reporterId === reportedUserId) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: 'نمی‌توانید خودتان را گزارش کنید',
-          englishMessage: 'Cannot report yourself'
-        }
+      if (existingReport) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            message: 'شما قبلاً این کاربر را برای همین تخلف گزارش کرده‌اید',
+            englishMessage: 'You have already reported this user for the same violation recently'
+          }
+        });
+      }
+
+      // Create new report with fixed reported user
+      report = new Report({
+        reporterId,
+        reportedUserId,
+        violationType,
+        description,
+        evidence: evidence || []
       });
-    }
 
-    // Check if user has already reported this user for same violation recently
-    const existingReport = await Report.findOne({
-      reporterId,
-      reportedUserId,
-      violationType,
-      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Within last 24 hours
-    });
+      await report.save();
 
-    if (existingReport) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: 'شما قبلاً این کاربر را برای همین تخلف گزارش کرده‌اید',
-          englishMessage: 'You have already reported this user for the same violation recently'
-        }
+      // Auto-process the report
+      await processReport(report._id);
+    } else {
+      // Create report without fixed reported user; store candidates and suggestion
+      report = new Report({
+        reporterId,
+        reportedUserId: null,
+        candidateUserIds: Array.isArray(candidateUserIds) ? candidateUserIds : [],
+        suggestedReportedUserId: suggestedReportedUserId || null,
+        violationType,
+        description,
+        evidence: evidence || [],
+        status: 'pending'
       });
+
+      await report.save();
+      // Do not auto-process until admin sets the final reportedUserId
     }
-
-    // Create new report
-    const report = new Report({
-      reporterId,
-      reportedUserId,
-      violationType,
-      description,
-      evidence: evidence || []
-    });
-
-    await report.save();
-
-    // Auto-process the report
-    await processReport(report._id);
 
     // Notify admins
     const reporterInfo = `گزارش‌دهنده: ${req.user.username}`;
@@ -341,11 +360,13 @@ const getReports = async (req, res, next) => {
           username: report.reporterId?.username,
           displayName: report.reporterId?.displayName
         },
-        reportedUser: {
+        reportedUser: report.reportedUserId ? {
           id: report.reportedUserId?._id,
           username: report.reportedUserId?.username,
           displayName: report.reportedUserId?.displayName
-        },
+        } : null,
+        candidateUserIds: report.candidateUserIds || [],
+        suggestedReportedUserId: report.suggestedReportedUserId || null,
         violationType: report.violationTypePersian,
         description: report.description,
         status: report.statusPersian,
@@ -405,10 +426,12 @@ const getReportById = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      report: {
+report: {
         id: report._id,
         reporter: report.reporterId,
         reportedUser: report.reportedUserId,
+        candidateUserIds: report.candidateUserIds || [],
+        suggestedReportedUserId: report.suggestedReportedUserId || null,
         violationType: report.violationTypePersian,
         violationTypeKey: report.violationType,
         description: report.description,
@@ -448,7 +471,7 @@ const getReportById = async (req, res, next) => {
 // @access  Private (Admin)
 const updateReport = async (req, res, next) => {
   try {
-    const { status, adminNotes, actionTaken } = req.body;
+    const { status, adminNotes, actionTaken, reportedUserId, processNow = false } = req.body;
     const reportId = req.params.id;
 
     const report = await Report.findById(reportId);
@@ -462,6 +485,15 @@ const updateReport = async (req, res, next) => {
       });
     }
 
+    // Optionally set or change the final reported user
+    if (reportedUserId) {
+      const user = await User.findById(reportedUserId);
+      if (!user) {
+        return res.status(404).json({ success: false, error: { message: 'کاربر نهایی گزارش یافت نشد', englishMessage: 'Final reported user not found' } });
+      }
+      report.reportedUserId = reportedUserId;
+    }
+
     // Update fields
     if (status) report.status = status;
     if (adminNotes) report.adminNotes = adminNotes;
@@ -472,11 +504,16 @@ const updateReport = async (req, res, next) => {
 
     await report.save();
 
+    // If requested, process now (only if we have a final reported user)
+    if (processNow && report.reportedUserId) {
+      await processReport(report._id);
+    }
+
     logger.info('Report updated manually:', {
       reportId,
       adminId: req.user.id,
       adminUsername: req.user.username,
-      changes: { status, adminNotes, actionTaken }
+      changes: { status, adminNotes, actionTaken, reportedUserId, processNow }
     });
 
     res.status(200).json({

@@ -41,12 +41,30 @@ export interface PublicRule {
   isActive?: boolean;
 }
 
+export interface PublicAppSettings {
+  branding: {
+    siteName: string;
+    loginTitle: string;
+    loginSubtitle: string;
+    loginDisclaimer: string;
+    logoUrl?: string;
+  };
+  legal: {
+    requireRulesAcceptance: boolean;
+    rulesText?: string;
+  };
+}
+
 export const publicApi = {
   subscriptions: {
     getAll: () => apiGet<{ success: boolean; data: PublicSubscription[] }>(`/subscriptions`),
   },
   rules: {
-    getAll: () => apiGet<{ success: boolean; rules: PublicRule[] }>(`/rules`),
+    getAll: () => apiGet<{ success: boolean; rules: PublicRule[] }>(`/public/rules`),
+  },
+  settings: {
+    getPublic: () => apiGet<{ success: boolean; settings: PublicAppSettings }>(`/settings/public`),
+    // admin update exists at PUT /api/settings (used by admin.html)
   },
 };
 

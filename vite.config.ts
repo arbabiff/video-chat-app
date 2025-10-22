@@ -116,7 +116,8 @@ export default defineConfig({
     target: 'es2015',
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html')
+        main: resolve(__dirname, 'index.html'),
+        adminLogin: resolve(__dirname, 'admin-login.html')
       },
       output: {
         chunkFileNames: 'assets/[name]-[hash].js',

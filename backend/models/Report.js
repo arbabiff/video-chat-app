@@ -9,7 +9,18 @@ const reportSchema = new mongoose.Schema({
   reportedUserId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: [true, 'شناسه کاربر گزارش‌شده الزامی است']
+    required: false // ممکن است گزارش بدون تعیین قطعی کاربر ارسال شود و بعداً توسط پشتیبانی تعیین گردد
+  },
+  // گزینه‌های احتمالی (لیست چند کاربر که گزارش‌دهنده می‌تواند انتخاب کند)
+  candidateUserIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  // کاربر پیشنهادی از طرف گزارش‌دهنده (اختیاری)
+  suggestedReportedUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
   },
   violationType: {
     type: String,
@@ -139,6 +150,8 @@ reportSchema.virtual('isActionExpired').get(function() {
 // Indexes for better performance
 reportSchema.index({ reportedUserId: 1, createdAt: -1 });
 reportSchema.index({ reporterId: 1 });
+reportSchema.index({ candidateUserIds: 1 });
+reportSchema.index({ suggestedReportedUserId: 1 });
 reportSchema.index({ violationType: 1 });
 reportSchema.index({ status: 1 });
 reportSchema.index({ actionTaken: 1 });

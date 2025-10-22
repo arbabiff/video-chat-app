@@ -59,7 +59,15 @@ const registerValidation = [
   body('country')
     .optional()
     .isLength({ min: 2, max: 2 })
-    .withMessage('کد کشور باید ۲ کاراکتر باشد')
+    .withMessage('کد کشور باید ۲ کاراکتر باشد'),
+  
+  body('referrerPhone')
+    .optional()
+    .isString()
+    .isLength({ min: 8, max: 20 })
+    .withMessage('شماره معرف نامعتبر است')
+    .matches(/^[0-9+]+$/)
+    .withMessage('شماره معرف باید فقط شامل ارقام یا + باشد')
 ];
 
 const loginValidation = [
@@ -115,6 +123,14 @@ const updateProfileValidation = [
     .optional()
     .isIn(['fa', 'en'])
     .withMessage('زبان باید فارسی یا انگلیسی باشد'),
+  
+  body('phone')
+    .optional()
+    .isString()
+    .isLength({ min: 8, max: 20 })
+    .withMessage('شماره تلفن نامعتبر است')
+    .matches(/^[0-9+]+$/)
+    .withMessage('شماره تلفن باید فقط شامل ارقام یا + باشد'),
   
   body('preferences.ageRange.min')
     .optional()

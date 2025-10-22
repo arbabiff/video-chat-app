@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const logger = require('../utils/logger');
+const referralService = require('../services/referralService');
 
 // @desc    Get user profile by ID
 // @route   GET /api/users/:id
@@ -637,6 +638,45 @@ const removeFriend = async (req, res, next) => {
   }
 };
 
+// @desc    Update my subscription (self-service or mocked purchase)
+// @route   PUT /api/users/me/subscription
+// @access  Private
+const updateMySubscription = async (req, res, next) => {
+  try {
+    const { type, durationDays } = req.body;
+
+    if (!['free', 'premium', 'vip'].includes(type)) {
+      return res.status(400).json({ success: false, message: 'نوع اشتراک نامعتبر است' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'کاربر یافت نشد' });
+    }
+
+    user.subscription.type = type;
+    if (type === 'free') {
+      user.subscription.expiresAt = undefined;
+      user.subscription.autoRenew = false;
+    } else {
+      const days = parseInt(durationDays, 10) || 30;
+      user.subscription.expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    }
+
+    await user.save({ validateBeforeSave: false });
+
+    // If user was referred and upgraded, notify referrer
+    if (['premium', 'vip'].includes(type)) {
+      await referralService.onReferredUserSubscribed(user);
+    }
+
+    return res.status(200).json({ success: true, subscription: user.subscription });
+  } catch (error) {
+    logger.error('Update my subscription error:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getUserProfile,
   searchUsers,
@@ -649,5 +689,6 @@ module.exports = {
   rejectFriendRequest,
   getFriendRequests,
   getFriends,
-  removeFriend
+  removeFriend,
+  updateMySubscription
 };

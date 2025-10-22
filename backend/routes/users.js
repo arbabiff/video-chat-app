@@ -1,6 +1,6 @@
 const express = require('express');
-const { query, param } = require('express-validator');
-const {
+const { query, param, body } = require('express-validator');
+const { 
   getUserProfile,
   searchUsers,
   findMatch,
@@ -12,7 +12,8 @@ const {
   rejectFriendRequest,
   getFriendRequests,
   getFriends,
-  removeFriend
+  removeFriend,
+  updateMySubscription
 } = require('../controllers/userController');
 const { validate } = require('../middleware/validate');
 
@@ -79,6 +80,14 @@ router.get('/find-match', findMatch);
 // @desc    Get blocked users list
 // @access  Private
 router.get('/blocked', getBlockedUsers);
+
+// @route   PUT /api/users/me/subscription
+// @desc    Update my subscription
+// @access  Private
+router.put('/me/subscription', [
+  body('type').isIn(['free','premium','vip']).withMessage('نوع اشتراک باید free، premium یا vip باشد'),
+  body('durationDays').optional().isInt({ min: 0, max: 3650 }).withMessage('مدت باید بین 0 تا 3650 روز باشد')
+], validate, updateMySubscription);
 
 // @route   GET /api/users/friend-requests
 // @desc    Get pending friend requests

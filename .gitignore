@@ -59,3 +59,6 @@ Thumbs.db
 # Temporary folders
 tmp/
 temp/
+
+# Nested admin app (kept local)
+video-chat-admin/

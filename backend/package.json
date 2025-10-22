@@ -11,6 +11,7 @@
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "seed": "node scripts/seedDatabase.js",
+    "seed:admin": "node scripts/seedAdmin.js",
     "migrate": "node scripts/migrate.js"
   },
   "keywords": [

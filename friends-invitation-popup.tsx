@@ -86,7 +86,7 @@ const FriendsInvitationPopup: React.FC<FriendsInvitationPopupProps> = ({ open, o
   }, [embedded, autoHideOnView, showPopup]);
 
   const modal = (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm grid place-items-center z-50 p-4">
       <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl w-full max-w-sm border border-gray-600 max-h-[85vh] flex flex-col">
         {/* Header - Smaller - Fixed */}
         <div className="relative bg-gradient-to-r from-yellow-500 to-orange-600 p-4 text-center flex-shrink-0">
@@ -101,11 +101,11 @@ const FriendsInvitationPopup: React.FC<FriendsInvitationPopupProps> = ({ open, o
             <div className="text-2xl">🤝</div>
           </div>
           
-          <h2 className="text-lg font-bold text-white mb-1">
-            دعوت دوستان
+          <h2 className="text-lg font-bold text-white mb-1 text-center">
+            دوستان خود را دعوت کنید و جایزه بگیرید
           </h2>
-          <p className="text-white/90 text-xs">
-            جایزه بگیرید و اشتراک رایگان دریافت کنید
+          <p className="text-white/90 text-xs text-center">
+            
           </p>
           
           {/* Reward Counter - Smaller */}
